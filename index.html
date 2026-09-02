@@ -1,0 +1,1466 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IO Log Scope</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f1f0ec;
+  --surface:#fcfcfb;
+  --panel:#f7f6f3;
+  --ink:#0b0b0b;
+  --ink-2:#52514e;
+  --ink-3:#898781;
+  --grid:#e1e0d9;
+  --axis:#c3c2b7;
+  --hair:rgba(11,11,11,0.10);
+  --hair-2:rgba(11,11,11,0.06);
+  --lane-alt:rgba(11,11,11,0.020);
+  --hover:rgba(11,11,11,0.045);
+  --accent:#2a78d6;
+  --good:#0ca30c;
+  --warn:#fab219;
+  --crit:#d03b3b;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
+  --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+  --cursor-a:#2a78d6; --cursor-b:#eb6834;
+  --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --plane:#0d0d0d;
+    --surface:#1a1a19;
+    --panel:#141413;
+    --ink:#ffffff;
+    --ink-2:#c3c2b7;
+    --ink-3:#898781;
+    --grid:#2c2c2a;
+    --axis:#383835;
+    --hair:rgba(255,255,255,0.10);
+    --hair-2:rgba(255,255,255,0.06);
+    --lane-alt:rgba(255,255,255,0.026);
+    --hover:rgba(255,255,255,0.055);
+    --accent:#3987e5;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+    --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --cursor-a:#3987e5; --cursor-b:#d95926;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d;
+  --surface:#1a1a19;
+  --panel:#141413;
+  --ink:#ffffff;
+  --ink-2:#c3c2b7;
+  --ink-3:#898781;
+  --grid:#2c2c2a;
+  --axis:#383835;
+  --hair:rgba(255,255,255,0.10);
+  --hair-2:rgba(255,255,255,0.06);
+  --lane-alt:rgba(255,255,255,0.026);
+  --hover:rgba(255,255,255,0.055);
+  --accent:#3987e5;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+  --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  --cursor-a:#3987e5; --cursor-b:#d95926;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--plane); color:var(--ink);
+  font-family:var(--sans); font-size:13px; line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit; color:inherit}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:4px}
+
+/* ---------- shell ---------- */
+.app{
+  display:grid;
+  grid-template-rows:auto auto 1fr auto;
+  height:100vh; min-height:520px;
+}
+
+/* ---------- top bar ---------- */
+.topbar{
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding:10px 16px; background:var(--panel);
+  border-bottom:1px solid var(--hair);
+}
+.brand{display:flex; align-items:baseline; gap:9px; margin-right:2px}
+.brand h1{
+  margin:0; font-size:14px; font-weight:600; letter-spacing:-0.01em;
+}
+.brand .ver{
+  font-family:var(--mono); font-size:10px; color:var(--ink-3);
+  letter-spacing:0.04em;
+}
+.filemeta{
+  display:flex; align-items:center; gap:0; flex-wrap:wrap;
+  font-family:var(--mono); font-size:11.5px; color:var(--ink-2);
+  min-width:0;
+}
+.filemeta b{font-weight:500; color:var(--ink)}
+.filemeta .sep{color:var(--ink-3); padding:0 8px}
+.filemeta .tag{
+  display:inline-block; padding:1px 6px; border-radius:3px;
+  background:var(--hover); color:var(--ink-2); font-size:10.5px;
+  letter-spacing:0.03em;
+}
+.spacer{flex:1 1 auto}
+
+.btn{
+  display:inline-flex; align-items:center; gap:6px;
+  padding:5px 11px; border:1px solid var(--hair); border-radius:5px;
+  background:var(--surface); cursor:pointer; font-size:12.5px;
+  white-space:nowrap;
+}
+.btn:hover{background:var(--hover)}
+.btn.primary{background:var(--accent); border-color:transparent; color:#fff}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn svg{width:13px; height:13px; flex:none}
+
+/* ---------- control strip ---------- */
+.controls{
+  display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+  padding:7px 16px; background:var(--surface);
+  border-bottom:1px solid var(--hair);
+}
+.ctlgroup{display:flex; align-items:center; gap:7px}
+.ctllabel{
+  font-size:10px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--ink-3); font-weight:500;
+}
+.seg{display:flex; border:1px solid var(--hair); border-radius:5px; overflow:hidden}
+.seg button{
+  padding:4px 10px; border:0; background:transparent; cursor:pointer;
+  font-size:12px; color:var(--ink-2);
+}
+.seg button + button{border-left:1px solid var(--hair)}
+.seg button[aria-pressed="true"]{background:var(--accent); color:#fff}
+.check{display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:var(--ink-2)}
+.check input{accent-color:var(--accent); margin:0}
+
+.cursors{
+  display:flex; align-items:center; gap:14px;
+  font-family:var(--mono); font-size:11.5px;
+}
+.cursor-chip{display:flex; align-items:center; gap:5px; color:var(--ink-2)}
+.cursor-chip .dot{width:8px; height:8px; border-radius:2px; flex:none}
+.cursor-chip .dot.a{background:var(--cursor-a)}
+.cursor-chip .dot.b{background:var(--cursor-b)}
+.cursor-chip b{font-weight:500; color:var(--ink); font-variant-numeric:tabular-nums}
+.cursor-chip.delta b{color:var(--accent)}
+
+/* ---------- body ---------- */
+.main{display:grid; grid-template-columns:274px 1fr; min-height:0}
+
+/* channel rail */
+.rail{
+  display:flex; flex-direction:column; min-height:0;
+  background:var(--panel); border-right:1px solid var(--hair);
+}
+.rail-head{padding:10px 12px 8px; display:flex; flex-direction:column; gap:8px}
+.search{position:relative}
+.search input{
+  width:100%; padding:6px 9px 6px 27px; font:inherit; font-size:12.5px;
+  border:1px solid var(--hair); border-radius:5px;
+  background:var(--surface); color:var(--ink);
+}
+.search svg{
+  position:absolute; left:8px; top:50%; transform:translateY(-50%);
+  width:13px; height:13px; color:var(--ink-3); pointer-events:none;
+}
+.filters{display:flex; gap:5px; flex-wrap:wrap}
+.chip{
+  padding:2px 8px; border:1px solid var(--hair); border-radius:99px;
+  background:transparent; cursor:pointer; font-size:11px; color:var(--ink-2);
+  font-family:var(--mono); letter-spacing:0.02em;
+}
+.chip[aria-pressed="true"]{background:var(--ink); color:var(--surface); border-color:var(--ink)}
+.rail-actions{
+  display:flex; align-items:center; gap:10px;
+  font-size:11.5px; color:var(--ink-3);
+}
+.linkbtn{
+  border:0; background:transparent; padding:0; cursor:pointer;
+  color:var(--accent); font-size:11.5px; text-decoration:underline;
+  text-underline-offset:2px;
+}
+.rail-count{margin-left:auto; font-family:var(--mono); font-size:11px}
+
+.chanlist{flex:1 1 auto; overflow-y:auto; padding:0 6px 10px}
+.chan{
+  display:grid; grid-template-columns:14px 8px 1fr auto; align-items:center;
+  gap:8px; padding:5px 7px; border-radius:5px; cursor:pointer;
+}
+.chan:hover{background:var(--hover)}
+.chan input{margin:0; accent-color:var(--accent)}
+.chan .swatch{width:8px; height:8px; border-radius:2px; flex:none}
+.chan .nm{
+  font-family:var(--mono); font-size:11.5px; color:var(--ink);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.chan .ty{
+  font-family:var(--mono); font-size:9.5px; letter-spacing:0.06em;
+  color:var(--ink-3); padding:1px 4px; border:1px solid var(--hair); border-radius:3px;
+}
+.chan.off .nm{color:var(--ink-3)}
+.railempty{padding:18px 12px; color:var(--ink-3); font-size:12px; text-align:center}
+
+/* plot */
+.stage{display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--surface)}
+.plotwrap{
+  position:relative; flex:1 1 auto; min-height:0;
+  overflow-y:auto; overflow-x:hidden;
+  cursor:crosshair;
+}
+.plotwrap.panning{cursor:grabbing}
+#spacer{width:1px}
+#plot{position:absolute; left:0; top:0; display:block}
+#axis{display:block; width:100%; height:30px; border-top:1px solid var(--hair); flex:none}
+
+.emptystate{
+  position:absolute; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:10px;
+  color:var(--ink-3); text-align:center; padding:24px; pointer-events:none;
+}
+.emptystate strong{color:var(--ink-2); font-weight:500; font-size:13px}
+.emptystate code{
+  font-family:var(--mono); font-size:11px; background:var(--hover);
+  padding:1px 5px; border-radius:3px; color:var(--ink-2);
+}
+
+.tip{
+  position:absolute; z-index:5; pointer-events:none;
+  background:var(--surface); border:1px solid var(--hair);
+  border-radius:6px; padding:7px 9px; min-width:132px;
+  box-shadow:0 4px 14px rgba(0,0,0,0.13);
+  font-family:var(--mono); font-size:11px; display:none;
+}
+.tip .tt{color:var(--ink-3); font-size:10px; letter-spacing:0.04em; margin-bottom:4px}
+.tip .row{display:flex; align-items:center; gap:6px; padding:1px 0}
+.tip .row .dot{width:7px; height:7px; border-radius:2px; flex:none}
+.tip .row .k{color:var(--ink-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:150px}
+.tip .row .v{margin-left:auto; color:var(--ink); font-variant-numeric:tabular-nums}
+
+.legend{
+  display:flex; flex-wrap:wrap; gap:5px 16px; padding:8px 16px 2px;
+  font-size:11.5px; color:var(--ink-2);
+}
+.legend .item{display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px}
+.legend .item .dot{width:9px; height:3px; border-radius:2px; flex:none}
+.legend:empty{display:none}
+
+.notice{
+  margin:8px 16px 0; padding:6px 10px; border-radius:5px;
+  background:var(--hover); border-left:2px solid var(--warn);
+  font-size:11.5px; color:var(--ink-2);
+}
+.notice:empty{display:none}
+
+/* ---------- readout table ---------- */
+.drawer{background:var(--panel); border-top:1px solid var(--hair)}
+.drawer-head{
+  display:flex; align-items:center; gap:10px; padding:7px 16px;
+}
+.drawer-head h2{
+  margin:0; font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--ink-3); font-weight:500;
+}
+.drawer-body{max-height:210px; overflow:auto; padding:0 16px 12px}
+table{border-collapse:collapse; width:100%; font-family:var(--mono); font-size:11.5px}
+th,td{text-align:right; padding:3px 10px; border-bottom:1px solid var(--hair-2); white-space:nowrap}
+th{
+  color:var(--ink-3); font-weight:500; font-size:10px; letter-spacing:0.06em;
+  text-transform:uppercase; position:sticky; top:0; background:var(--panel);
+}
+th:first-child, td:first-child{text-align:left}
+td{font-variant-numeric:tabular-nums; color:var(--ink)}
+td.name{display:flex; align-items:center; gap:7px}
+td .dot{width:8px; height:8px; border-radius:2px; flex:none}
+td.dim{color:var(--ink-3)}
+
+/* ---------- drop overlay ---------- */
+.drop{
+  position:fixed; inset:0; z-index:20; display:none;
+  align-items:center; justify-content:center;
+  background:color-mix(in srgb, var(--plane) 88%, transparent);
+  border:2px dashed var(--accent);
+}
+.drop.on{display:flex}
+.drop span{font-size:15px; color:var(--ink); font-weight:500}
+
+@media (max-width:820px){
+  .main{grid-template-columns:1fr; grid-template-rows:auto 1fr}
+  .rail{border-right:0; border-bottom:1px solid var(--hair); max-height:190px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <h1>IO Log Scope</h1>
+      <span class="ver">v1.0</span>
+    </div>
+
+    <button class="btn primary" id="btnOpen">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path d="M1.5 4.2c0-.7.6-1.2 1.2-1.2h3l1.5 1.8h6.1c.7 0 1.2.5 1.2 1.2v6.3c0 .7-.5 1.2-1.2 1.2H2.7c-.6 0-1.2-.5-1.2-1.2z"/>
+      </svg>
+      엑셀 파일 열기
+    </button>
+    <button class="btn" id="btnSample">샘플 로그</button>
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.xlsm,.csv,.tsv" hidden>
+
+    <div class="filemeta" id="fileMeta"></div>
+    <div class="spacer"></div>
+    <select id="sheetSel" class="btn" style="display:none" aria-label="시트 선택"></select>
+  </header>
+
+  <div class="controls">
+    <div class="ctlgroup">
+      <span class="ctllabel">보기</span>
+      <div class="seg" role="group" aria-label="플롯 모드">
+        <button id="modeLanes" aria-pressed="true">레인</button>
+        <button id="modeOverlay" aria-pressed="false">겹쳐보기</button>
+      </div>
+    </div>
+
+    <div class="ctlgroup">
+      <span class="ctllabel">배치</span>
+      <div class="seg" role="group" aria-label="데이터 방향">
+        <button id="orRows" aria-pressed="true" title="1행=시간, 각 행=IO 채널">행=IO</button>
+        <button id="orCols" aria-pressed="false" title="1열=시간, 각 열=IO 채널">열=IO</button>
+      </div>
+    </div>
+
+    <label class="check" id="normWrap" style="display:none">
+      <input type="checkbox" id="normChk"> 0–1 정규화
+    </label>
+
+    <div class="spacer"></div>
+
+    <div class="cursors">
+      <span class="cursor-chip"><span class="dot a"></span>A <b id="curA">—</b></span>
+      <span class="cursor-chip"><span class="dot b"></span>B <b id="curB">—</b></span>
+      <span class="cursor-chip delta">Δt <b id="curD">—</b></span>
+    </div>
+    <button class="btn" id="btnClear">커서 해제</button>
+    <button class="btn" id="btnFit">전체 보기</button>
+  </div>
+
+  <div class="main">
+    <aside class="rail">
+      <div class="rail-head">
+        <div class="search">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.3"/><path d="M10.2 10.2 14 14"/>
+          </svg>
+          <input type="search" id="searchInput" placeholder="IO 이름 검색" aria-label="IO 이름 검색">
+        </div>
+        <div class="filters" role="group" aria-label="채널 타입 필터">
+          <button class="chip" id="fAll" aria-pressed="true">ALL</button>
+          <button class="chip" id="fDig" aria-pressed="false">DIG</button>
+          <button class="chip" id="fAna" aria-pressed="false">ANA</button>
+          <button class="chip" id="fSta" aria-pressed="false">STATE</button>
+        </div>
+        <div class="rail-actions">
+          <button class="linkbtn" id="selAll">전체 선택</button>
+          <button class="linkbtn" id="selNone">전체 해제</button>
+          <span class="rail-count" id="railCount">0 / 0</span>
+        </div>
+      </div>
+      <div class="chanlist" id="chanList"></div>
+    </aside>
+
+    <section class="stage">
+      <div class="notice" id="notice"></div>
+      <div class="legend" id="legend"></div>
+      <div class="plotwrap" id="plotWrap">
+        <div id="spacer"></div>
+        <canvas id="plot"></canvas>
+        <div class="tip" id="tip"></div>
+        <div class="emptystate" id="empty">
+          <strong>엑셀 로그 파일을 열어 주세요</strong>
+          <div>첫 행에 시간, 각 행의 첫 열에 <code>IO 이름</code>이 있는 형식입니다.</div>
+          <div>파일을 이 영역에 끌어다 놓아도 됩니다.</div>
+        </div>
+      </div>
+      <canvas id="axis"></canvas>
+    </section>
+  </div>
+
+  <div class="drawer">
+    <div class="drawer-head">
+      <h2>커서 값 판독</h2>
+      <span class="ctllabel" id="readoutHint">플롯을 클릭해 커서 A, Shift+클릭으로 커서 B를 놓으세요</span>
+    </div>
+    <div class="drawer-body">
+      <table id="readout">
+        <thead><tr><th>IO 이름</th><th>타입</th><th>커서 A</th><th>커서 B</th><th>Δ</th><th>최소</th><th>최대</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<div class="drop" id="drop"><span>파일을 놓으면 로그를 불러옵니다</span></div>
+<script>
+(function () {
+  'use strict';
+
+  /* ============================ 상태 ============================ */
+  var state = {
+    wb: null, fileName: '', sheetName: '',
+    orientation: 'rows',        // 'rows' = 각 행이 IO 채널, 'cols' = 각 열이 IO 채널
+    mode: 'lanes',              // 'lanes' | 'overlay'
+    normalize: false,
+    channels: [],               // {name,type,values[],states[],min,max,index,selected}
+    times: [], timeKind: 'index', timeUnit: '',
+    view: { t0: 0, t1: 1 },
+    cursorA: null, cursorB: null,
+    hoverX: null, scrollTop: 0,
+    filter: 'all', query: ''
+  };
+
+  var LANE_H = { digital: 34, state: 34, analog: 58 };
+  var MAX_OVERLAY = 8;
+  var PAD_R = 104;
+
+  var $ = function (id) { return document.getElementById(id); };
+  var wrap = $('plotWrap'), spacer = $('spacer');
+  var cv = $('plot'), ctx = cv.getContext('2d');
+  var ax = $('axis'), axc = ax.getContext('2d');
+  var tip = $('tip');
+
+  function css(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function seriesColor(i) { return css('--s' + ((i % 8) + 1)); }
+  function chanColor(ch) { return state.mode === 'overlay' ? seriesColor(ch.index) : css('--accent'); }
+
+  /* ============================ 셀 파싱 ============================ */
+  var TRUEY = { '1': 1, 'true': 1, 'on': 1, 'high': 1, 'h': 1, 'yes': 1, 'y': 1, 't': 1 };
+  var FALSEY = { '0': 1, 'false': 1, 'off': 1, 'low': 1, 'l': 1, 'no': 1, 'n': 1, 'f': 1 };
+
+  function isBlank(v) { return v === null || v === undefined || (typeof v === 'string' && v.trim() === ''); }
+
+  function asNumber(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    if (typeof v === 'string') {
+      var s = v.trim().replace(/,/g, '');
+      if (s === '') return null;
+      var n = Number(s);
+      return isFinite(n) ? n : null;
+    }
+    return null;
+  }
+
+  function parseTimeCell(v) {
+    if (v instanceof Date) return { t: v.getTime(), kind: 'date' };
+    if (typeof v === 'number' && isFinite(v)) return { t: v, kind: 'number' };
+    if (typeof v === 'string') {
+      var s = v.trim();
+      var m = s.match(/^(\d{1,4}):([0-5]?\d):([0-5]?\d)(?:[.,](\d{1,6}))?$/);
+      if (m) return { t: (+m[1] * 3600 + +m[2] * 60 + +m[3]) * 1000 + (m[4] ? +((m[4] + '000').slice(0, 3)) : 0), kind: 'clock' };
+      var m2 = s.match(/^([0-9]{1,4}):([0-5]?\d)(?:[.,](\d{1,6}))?$/);
+      if (m2) return { t: (+m2[1] * 60 + +m2[2]) * 1000 + (m2[3] ? +((m2[3] + '000').slice(0, 3)) : 0), kind: 'clock' };
+      var n = Number(s.replace(/,/g, ''));
+      if (s !== '' && isFinite(n)) return { t: n, kind: 'number' };
+      var d = Date.parse(s);
+      if (!isNaN(d)) return { t: d, kind: 'date' };
+    }
+    return { t: NaN, kind: 'index' };
+  }
+
+  function classify(raw) {
+    var numeric = true, digital = true, any = false;
+    for (var i = 0; i < raw.length; i++) {
+      var v = raw[i];
+      if (isBlank(v)) continue;
+      any = true;
+      if (typeof v === 'boolean') continue;
+      var n = asNumber(v);
+      if (n !== null) { if (n !== 0 && n !== 1) digital = false; continue; }
+      numeric = false;
+      var s = String(v).trim().toLowerCase();
+      if (!TRUEY[s] && !FALSEY[s]) digital = false;
+    }
+    if (!any) return 'empty';
+    if (digital) return 'digital';
+    if (numeric) return 'analog';
+    return 'state';
+  }
+
+  function toValues(raw, type) {
+    var out = new Array(raw.length), states = null, map = null;
+    if (type === 'state') { states = []; map = Object.create(null); }
+    for (var i = 0; i < raw.length; i++) {
+      var v = raw[i];
+      if (isBlank(v)) { out[i] = null; continue; }
+      if (type === 'state') {
+        var key = String(v).trim();
+        if (!(key in map)) { map[key] = states.length; states.push(key); }
+        out[i] = map[key];
+      } else if (type === 'digital') {
+        if (typeof v === 'boolean') { out[i] = v ? 1 : 0; continue; }
+        var n1 = asNumber(v);
+        if (n1 !== null) { out[i] = n1 ? 1 : 0; continue; }
+        out[i] = TRUEY[String(v).trim().toLowerCase()] ? 1 : 0;
+      } else {
+        out[i] = asNumber(v);
+      }
+    }
+    return { values: out, states: states };
+  }
+
+  /* ============================ 데이터셋 구성 ============================ */
+  function transpose(g) {
+    var w = 0, i, j;
+    for (i = 0; i < g.length; i++) w = Math.max(w, g[i] ? g[i].length : 0);
+    var out = [];
+    for (j = 0; j < w; j++) {
+      var row = new Array(g.length);
+      for (i = 0; i < g.length; i++) row[i] = g[i] ? (g[i][j] === undefined ? null : g[i][j]) : null;
+      out.push(row);
+    }
+    return out;
+  }
+
+  function buildDataset(aoa, sheetName) {
+    var grid = state.orientation === 'cols' ? transpose(aoa) : aoa;
+    var notes = [];
+
+    grid = grid.filter(function (r) { return r && r.some(function (c) { return !isBlank(c); }); });
+    if (grid.length < 2) { fail('시트에 데이터 행이 없습니다. 배치(행=IO / 열=IO) 설정을 바꿔 보세요.'); return; }
+
+    var header = grid[0];
+    var width = 0;
+    for (var i = 0; i < grid.length; i++) width = Math.max(width, grid[i].length);
+    // 값이 전혀 없는 뒤쪽 열은 잘라낸다
+    while (width > 1) {
+      var empty = true;
+      for (var r = 0; r < grid.length; r++) { if (!isBlank(grid[r][width - 1])) { empty = false; break; } }
+      if (!empty) break;
+      width--;
+    }
+    var n = width - 1;
+    if (n < 1) { fail('시간 열을 찾지 못했습니다.'); return; }
+
+    // 시간축
+    var parsed = [], kinds = {};
+    for (var c = 1; c <= n; c++) {
+      var p = parseTimeCell(header[c]);
+      parsed.push(p);
+      if (!isNaN(p.t)) kinds[p.kind] = (kinds[p.kind] || 0) + 1;
+    }
+    var best = 'index', bestN = 0;
+    Object.keys(kinds).forEach(function (k) { if (kinds[k] > bestN) { bestN = kinds[k]; best = k; } });
+    var times = new Array(n), usable = 0;
+    for (var k = 0; k < n; k++) {
+      var pk = parsed[k];
+      if (pk.kind === best && !isNaN(pk.t)) { times[k] = pk.t; usable++; } else { times[k] = NaN; }
+    }
+    if (usable < n * 0.6) {
+      best = 'index'; notes.push('첫 행의 시간 값을 해석하지 못해 샘플 번호(0…' + (n - 1) + ')를 시간축으로 사용합니다.');
+      for (var q = 0; q < n; q++) times[q] = q;
+    } else {
+      for (var q2 = 0; q2 < n; q2++) if (isNaN(times[q2])) times[q2] = q2 > 0 ? times[q2 - 1] : 0;
+      // 단조 증가하지 않으면 샘플 번호로 대체
+      for (var q3 = 1; q3 < n; q3++) {
+        if (times[q3] < times[q3 - 1]) {
+          notes.push('시간 값이 증가하지 않아 샘플 번호를 시간축으로 사용합니다.');
+          best = 'index';
+          for (var q4 = 0; q4 < n; q4++) times[q4] = q4;
+          break;
+        }
+      }
+    }
+    state.timeKind = best;
+    state.timeUnit = best === 'number' ? unitOf(header[0]) : '';
+
+    // 채널
+    var channels = [], skipped = 0;
+    for (var ri = 1; ri < grid.length; ri++) {
+      var row = grid[ri];
+      var name = isBlank(row[0]) ? '' : String(row[0]).trim();
+      var raw = new Array(n);
+      for (var ci = 0; ci < n; ci++) raw[ci] = row[ci + 1] === undefined ? null : row[ci + 1];
+      var type = classify(raw);
+      if (type === 'empty') { skipped++; continue; }
+      if (!name) name = 'IO_' + String(channels.length + 1).padStart(3, '0');
+      var conv = toValues(raw, type);
+      var mn = Infinity, mx = -Infinity;
+      for (var vi = 0; vi < n; vi++) { var v = conv.values[vi]; if (v === null) continue; if (v < mn) mn = v; if (v > mx) mx = v; }
+      if (mn === Infinity) { skipped++; continue; }
+      channels.push({
+        name: name, type: type, values: conv.values, states: conv.states,
+        min: mn, max: mx, index: channels.length, selected: true
+      });
+    }
+    if (!channels.length) { fail('IO 채널을 찾지 못했습니다. 배치(행=IO / 열=IO) 설정을 바꿔 보세요.'); return; }
+    if (skipped) notes.push('값이 비어 있는 행 ' + skipped + '개를 건너뛰었습니다.');
+    if (channels.length > 40) {
+      for (var s = 40; s < channels.length; s++) channels[s].selected = false;
+      notes.push('채널이 ' + channels.length + '개여서 처음 40개만 표시합니다. 왼쪽 목록에서 바꿀 수 있습니다.');
+    }
+
+    state.channels = channels;
+    state.times = times;
+    state.sheetName = sheetName || '';
+    state.cursorA = state.cursorB = null;
+    fit();
+    $('notice').textContent = notes.join(' ');
+    $('empty').style.display = 'none';
+    renderAll();
+  }
+
+  function unitOf(label) {
+    if (isBlank(label)) return '';
+    var m = String(label).match(/[\[(]\s*([^\])]{1,8})\s*[\])]/);
+    if (m) return m[1].trim();
+    var m2 = String(label).match(/\b(ms|us|µs|ns|sec|s|min)\b/i);
+    return m2 ? m2[1] : '';
+  }
+
+  function fail(msg) {
+    state.channels = []; state.times = [];
+    $('notice').textContent = msg;
+    $('empty').style.display = 'flex';
+    renderAll();
+  }
+
+  /* ============================ 시간 포맷 ============================ */
+  var TIME_STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1e3, 2e3, 5e3, 1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5, 9e5, 18e5, 36e5];
+
+  function niceTicks(min, max, target) {
+    var span = max - min;
+    if (!(span > 0)) return { ticks: [min], step: 1 };
+    var step;
+    if (state.timeKind === 'date' || state.timeKind === 'clock') {
+      var want = span / target;
+      step = TIME_STEPS[TIME_STEPS.length - 1];
+      for (var i = 0; i < TIME_STEPS.length; i++) { if (TIME_STEPS[i] >= want) { step = TIME_STEPS[i]; break; } }
+      if (want > step) step = Math.ceil(want / 36e5) * 36e5;
+    } else {
+      var raw = span / target, mag = Math.pow(10, Math.floor(Math.log10(raw))), nm = raw / mag;
+      step = (nm < 1.5 ? 1 : nm < 3 ? 2 : nm < 7 ? 5 : 10) * mag;
+    }
+    var out = [];
+    for (var t = Math.ceil(min / step) * step; t <= max + step * 1e-9; t += step) out.push(t);
+    return { ticks: out, step: step };
+  }
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function pad3(n) { return (n < 100 ? (n < 10 ? '00' : '0') : '') + n; }
+
+  function fmtTime(t, step) {
+    if (state.timeKind === 'date') {
+      var d = new Date(t);
+      var s = pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+      return (step !== undefined && step < 1000) ? s + '.' + pad3(d.getMilliseconds()) : s;
+    }
+    if (state.timeKind === 'clock') {
+      var ms = Math.round(t), h = Math.floor(ms / 36e5), m = Math.floor(ms % 36e5 / 6e4),
+        sec = Math.floor(ms % 6e4 / 1000), rem = ms % 1000;
+      var base = (h ? h + ':' : '') + pad2(m) + ':' + pad2(sec);
+      return (step !== undefined && step < 1000) ? base + '.' + pad3(rem) : base;
+    }
+    var dig = step !== undefined && step > 0 ? Math.max(0, Math.min(6, -Math.floor(Math.log10(step)) + 1)) : 3;
+    var txt = Math.abs(t) >= 1e6 ? t.toExponential(2) : t.toFixed(dig).replace(/\.?0+$/, '');
+    return txt + (state.timeUnit ? ' ' + state.timeUnit : '');
+  }
+
+  function fmtNum(v) {
+    if (v === null || v === undefined) return '—';
+    var a = Math.abs(v);
+    if (a === 0) return '0';
+    if (a >= 1e6 || a < 1e-4) return v.toExponential(2);
+    if (a >= 100) return v.toFixed(1);
+    if (a >= 1) return v.toFixed(2);
+    return v.toFixed(3);
+  }
+
+  function fmtVal(ch, v) {
+    if (v === null || v === undefined) return '—';
+    if (ch.type === 'digital') return v ? '1' : '0';
+    if (ch.type === 'state') return ch.states[v] !== undefined ? ch.states[v] : '—';
+    return fmtNum(v);
+  }
+
+  /* ============================ 좌표계 ============================ */
+  function geom() {
+    var W = wrap.clientWidth || 800, H = wrap.clientHeight || 400;
+    var padL = state.mode === 'overlay' ? 64 : Math.min(168, Math.max(96, Math.round(W * 0.13)));
+    return { W: W, H: H, padL: padL, padR: PAD_R, plotW: Math.max(20, W - padL - PAD_R) };
+  }
+  function xOf(t, g) { return g.padL + (t - state.view.t0) / (state.view.t1 - state.view.t0) * g.plotW; }
+  function tOf(x, g) { return state.view.t0 + (x - g.padL) / g.plotW * (state.view.t1 - state.view.t0); }
+
+  function lower(arr, v) { var lo = 0, hi = arr.length; while (lo < hi) { var m = (lo + hi) >> 1; if (arr[m] < v) lo = m + 1; else hi = m; } return lo; }
+  function nearestIdx(t) {
+    var a = state.times; if (!a.length) return -1;
+    var i = lower(a, t);
+    if (i <= 0) return 0;
+    if (i >= a.length) return a.length - 1;
+    return (t - a[i - 1] <= a[i] - t) ? i - 1 : i;
+  }
+  function idxRange() {
+    var a = state.times, i0 = lower(a, state.view.t0) - 1, i1 = lower(a, state.view.t1) + 1;
+    if (i0 < 0) i0 = 0; if (i1 > a.length - 1) i1 = a.length - 1;
+    return [i0, i1];
+  }
+
+  function dataSpan() {
+    var a = state.times;
+    if (a.length < 2) return { lo: 0, hi: 1 };
+    return { lo: a[0], hi: a[a.length - 1] || a[0] + 1 };
+  }
+  function fit() {
+    var d = dataSpan(), span = d.hi - d.lo || 1;
+    state.view = { t0: d.lo, t1: d.lo + span };
+  }
+  function clampView(t0, t1) {
+    var d = dataSpan(), full = (d.hi - d.lo) || 1;
+    var minSpan = full / 20000;
+    if (t1 - t0 < minSpan) { var mid = (t0 + t1) / 2; t0 = mid - minSpan / 2; t1 = mid + minSpan / 2; }
+    if (t1 - t0 > full) { t0 = d.lo; t1 = d.hi; }
+    if (t0 < d.lo) { t1 += d.lo - t0; t0 = d.lo; }
+    if (t1 > d.hi) { t0 -= t1 - d.hi; t1 = d.hi; }
+    if (t0 < d.lo) t0 = d.lo;
+    state.view = { t0: t0, t1: t1 };
+  }
+
+  function layout() {
+    var list = state.channels.filter(function (c) { return c.selected; });
+    if (state.mode === 'overlay') {
+      return { list: list.slice(0, MAX_OVERLAY), lanes: null, total: 0, over: Math.max(0, list.length - MAX_OVERLAY) };
+    }
+    var lanes = [], y = 0;
+    for (var i = 0; i < list.length; i++) {
+      var h = LANE_H[list[i].type] || LANE_H.analog;
+      lanes.push({ ch: list[i], top: y, h: h });
+      y += h;
+    }
+    return { list: list, lanes: lanes, total: y, over: 0 };
+  }
+
+  /* ============================ 렌더링 ============================ */
+  var MONO = '"IBM Plex Mono", ui-monospace, monospace';
+  var SENTINEL = {};
+
+  function draw() {
+    var g = geom(), lay = layout();
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    var H = Math.max(60, g.H);
+
+    if (state.mode === 'lanes') {
+      spacer.style.height = Math.max(lay.total, 1) + 'px';
+      cv.style.top = wrap.scrollTop + 'px';
+    } else {
+      spacer.style.height = '1px';
+      wrap.scrollTop = 0;
+      cv.style.top = '0px';
+    }
+    cv.style.width = g.W + 'px'; cv.style.height = H + 'px';
+    cv.width = Math.round(g.W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, g.W, H);
+
+    if (!state.channels.length || !state.times.length) { drawAxis(g); return; }
+
+    drawGrid(g, H);
+    if (state.mode === 'lanes') drawLanes(g, H, lay); else drawOverlay(g, H, lay);
+    drawCursors(g, H);
+    drawAxis(g);
+  }
+
+  function ticksNow(g) {
+    var r = niceTicks(state.view.t0, state.view.t1, Math.max(2, Math.round(g.plotW / 96)));
+    return r;
+  }
+
+  function drawGrid(g, H) {
+    var r = ticksNow(g);
+    ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (var i = 0; i < r.ticks.length; i++) {
+      var x = Math.round(xOf(r.ticks[i], g)) + 0.5;
+      if (x < g.padL - 1 || x > g.padL + g.plotW + 1) continue;
+      ctx.moveTo(x, 0); ctx.lineTo(x, H);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = css('--axis');
+    ctx.beginPath();
+    ctx.moveTo(Math.round(g.padL + g.plotW) + 0.5, 0);
+    ctx.lineTo(Math.round(g.padL + g.plotW) + 0.5, H);
+    ctx.moveTo(Math.round(g.padL) + 0.5, 0);
+    ctx.lineTo(Math.round(g.padL) + 0.5, H);
+    ctx.stroke();
+  }
+
+  function clipPlot(g, y, h) {
+    ctx.save(); ctx.beginPath(); ctx.rect(g.padL, y, g.plotW, h); ctx.clip();
+  }
+
+  function drawLanes(g, H, lay) {
+    var yOff = wrap.scrollTop, R = idxRange(), i0 = R[0], i1 = R[1];
+    var accent = css('--accent'), ink = css('--ink'), ink2 = css('--ink-2'), ink3 = css('--ink-3');
+    var hoverI = state.hoverX === null ? -1 : nearestIdx(tOf(state.hoverX, g));
+
+    for (var li = 0; li < lay.lanes.length; li++) {
+      var L = lay.lanes[li], top = L.top - yOff, ch = L.ch;
+      if (top + L.h < -2 || top > H + 2) continue;
+
+      if (li % 2 === 1) { ctx.fillStyle = css('--lane-alt'); ctx.fillRect(0, top, g.W, L.h); }
+      ctx.strokeStyle = css('--hair-2'); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, Math.round(top + L.h) + 0.5); ctx.lineTo(g.W, Math.round(top + L.h) + 0.5); ctx.stroke();
+
+      clipPlot(g, top, L.h);
+      if (ch.type === 'digital') drawDigital(ch, g, top, L.h, accent, i0, i1);
+      else if (ch.type === 'state') drawStateRibbon(ch, g, top, L.h, i0, i1);
+      else drawAnalog(ch, g, top, L.h, accent, i0, i1, ch.min, ch.max);
+      ctx.restore();
+
+      // 레인 이름 (왼쪽 이름 거터)
+      ctx.font = '500 11px ' + MONO;
+      var label = ch.name, maxw = g.padL - 20;
+      if (ctx.measureText(label).width > maxw) {
+        while (label.length > 2 && ctx.measureText(label + '…').width > maxw) label = label.slice(0, -1);
+        label += '…';
+      }
+      ctx.textAlign = 'right'; ctx.fillStyle = ink;
+      ctx.fillText(label, g.padL - 10, top + L.h / 2 + 4);
+      ctx.textAlign = 'left';
+
+      // 오른쪽 판독 거터
+      var vi = hoverI >= 0 ? hoverI : i1;
+      var val = ch.values[vi];
+      ctx.textAlign = 'right'; ctx.font = '500 11.5px ' + MONO;
+      ctx.fillStyle = ink;
+      ctx.fillText(fmtVal(ch, val), g.W - 12, top + (ch.type === 'analog' ? 17 : L.h / 2 + 4));
+      if (ch.type === 'analog') {
+        ctx.font = '400 10px ' + MONO; ctx.fillStyle = ink3;
+        ctx.fillText(fmtNum(ch.min) + ' – ' + fmtNum(ch.max), g.W - 12, top + 31);
+      }
+      ctx.textAlign = 'left';
+    }
+
+    if (!lay.lanes.length) {
+      ctx.fillStyle = ink2; ctx.font = '13px ' + MONO; ctx.textAlign = 'center';
+      ctx.fillText('표시할 채널이 없습니다 — 왼쪽 목록에서 선택하세요', g.W / 2, 40);
+      ctx.textAlign = 'left';
+    }
+  }
+
+  function drawDigital(ch, g, y, h, color, i0, i1) {
+    var lowY = y + h - 8, highY = y + 8, t = state.times, v = ch.values;
+    var right = g.padL + g.plotW;
+
+    // 하이 구간 채움
+    ctx.fillStyle = color; ctx.globalAlpha = 0.13;
+    var runStart = -1;
+    for (var i = i0; i <= i1; i++) {
+      var on = v[i] === 1;
+      if (on && runStart < 0) runStart = i;
+      if ((!on || i === i1) && runStart >= 0) {
+        var xa = xOf(t[runStart], g), xb = xOf(t[Math.min(i, i1)], g);
+        ctx.fillRect(xa, highY, Math.max(0.7, xb - xa), lowY - highY);
+        runStart = -1;
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    var started = false, prevY = 0;
+    for (var j = i0; j <= i1; j++) {
+      var val = v[j];
+      if (val === null) { started = false; continue; }
+      var x = xOf(t[j], g), yy = val ? highY : lowY;
+      if (!started) { ctx.moveTo(x, yy); started = true; }
+      else { ctx.lineTo(x, prevY); ctx.lineTo(x, yy); }
+      prevY = yy;
+    }
+    if (started) ctx.lineTo(right, prevY);
+    ctx.stroke();
+  }
+
+  function drawStateRibbon(ch, g, y, h, i0, i1) {
+    var t = state.times, v = ch.values, top = y + 8, bot = y + h - 8;
+    var right = g.padL + g.plotW;
+    ctx.font = '500 10px ' + MONO;
+    var start = i0, cur = v[i0];
+    for (var i = i0 + 1; i <= i1 + 1; i++) {
+      var val = i > i1 ? SENTINEL : v[i];
+      if (val === cur && i <= i1) continue;
+      var xa = xOf(t[start], g), xb = i > i1 ? right : xOf(t[i], g);
+      if (cur !== null && cur !== undefined) {
+        var col = cur < 8 ? seriesColor(cur) : css('--ink-3');
+        ctx.fillStyle = col; ctx.globalAlpha = 0.78;
+        ctx.fillRect(xa, top, Math.max(0.7, xb - xa - 2), bot - top);
+        ctx.globalAlpha = 1;
+        var lbl = ch.states[cur] || '';
+        var lw = ctx.measureText(lbl).width;
+        if (xb - xa > lw + 12) { ctx.fillStyle = '#fff'; ctx.fillText(lbl, xa + 6, (top + bot) / 2 + 3.5); }
+      }
+      start = i; cur = val;
+    }
+  }
+
+  function drawAnalog(ch, g, y, h, color, i0, i1, mn, mx) {
+    var t = state.times, v = ch.values;
+    var top = y + 8, bot = y + h - 8;
+    if (!(mx > mn)) { mx = mn + 1; }
+    function yv(val) { return bot - (val - mn) / (mx - mn) * (bot - top); }
+    var count = i1 - i0 + 1, dense = count > g.plotW * 2;
+
+    if (dense) {
+      var cols = Math.ceil(g.plotW), mins = new Float64Array(cols).fill(Infinity), maxs = new Float64Array(cols).fill(-Infinity);
+      for (var i = i0; i <= i1; i++) {
+        var val = v[i]; if (val === null) continue;
+        var c = Math.floor(xOf(t[i], g) - g.padL);
+        if (c < 0 || c >= cols) continue;
+        if (val < mins[c]) mins[c] = val;
+        if (val > maxs[c]) maxs[c] = val;
+      }
+      ctx.strokeStyle = color; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (var c2 = 0; c2 < cols; c2++) {
+        if (mins[c2] === Infinity) continue;
+        var x = g.padL + c2 + 0.5;
+        ctx.moveTo(x, yv(maxs[c2])); ctx.lineTo(x, yv(mins[c2]) + 0.8);
+      }
+      ctx.stroke();
+      return;
+    }
+
+    // 면 채움
+    ctx.fillStyle = color; ctx.globalAlpha = 0.10;
+    ctx.beginPath();
+    var open = false;
+    for (var k = i0; k <= i1; k++) {
+      var val2 = v[k];
+      if (val2 === null) {
+        if (open) { ctx.lineTo(xOf(t[k - 1], g), bot); ctx.closePath(); ctx.fill(); open = false; }
+        continue;
+      }
+      var x2 = xOf(t[k], g);
+      if (!open) { ctx.beginPath(); ctx.moveTo(x2, bot); open = true; }
+      ctx.lineTo(x2, yv(val2));
+    }
+    if (open) { ctx.lineTo(xOf(t[i1], g), bot); ctx.closePath(); ctx.fill(); }
+    ctx.globalAlpha = 1;
+
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    var pen = false;
+    for (var m = i0; m <= i1; m++) {
+      var val3 = v[m];
+      if (val3 === null) { pen = false; continue; }
+      var x3 = xOf(t[m], g), y3 = yv(val3);
+      if (!pen) { ctx.moveTo(x3, y3); pen = true; } else ctx.lineTo(x3, y3);
+    }
+    ctx.stroke();
+  }
+
+  function drawOverlay(g, H, lay) {
+    var list = lay.list, R = idxRange(), i0 = R[0], i1 = R[1];
+    var top = 14, bot = H - 12;
+    var mn = Infinity, mx = -Infinity, i;
+
+    if (state.normalize) { mn = 0; mx = 1; }
+    else {
+      for (i = 0; i < list.length; i++) { if (list[i].min < mn) mn = list[i].min; if (list[i].max > mx) mx = list[i].max; }
+      if (!isFinite(mn)) { mn = 0; mx = 1; }
+      if (mx === mn) { mx = mn + 1; }
+      var pad = (mx - mn) * 0.08; mn -= pad; mx += pad;
+    }
+    function yv(val) { return bot - (val - mn) / (mx - mn) * (bot - top); }
+
+    // y축
+    var yr = (function () {
+      var span = mx - mn, raw = span / 5, mag = Math.pow(10, Math.floor(Math.log10(raw))), nm = raw / mag;
+      var step = (nm < 1.5 ? 1 : nm < 3 ? 2 : nm < 7 ? 5 : 10) * mag, out = [];
+      for (var t = Math.ceil(mn / step) * step; t <= mx + step * 1e-9; t += step) out.push(t);
+      return out;
+    })();
+    ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1; ctx.beginPath();
+    for (i = 0; i < yr.length; i++) { var y = Math.round(yv(yr[i])) + 0.5; ctx.moveTo(g.padL, y); ctx.lineTo(g.padL + g.plotW, y); }
+    ctx.stroke();
+    ctx.fillStyle = css('--ink-3'); ctx.font = '400 10.5px ' + MONO; ctx.textAlign = 'right';
+    for (i = 0; i < yr.length; i++) ctx.fillText(fmtNum(yr[i]), g.padL - 8, yv(yr[i]) + 3.5);
+    ctx.textAlign = 'left';
+
+    if (!list.length) {
+      ctx.fillStyle = css('--ink-2'); ctx.font = '13px ' + MONO; ctx.textAlign = 'center';
+      ctx.fillText('표시할 채널이 없습니다 — 왼쪽 목록에서 선택하세요', g.W / 2, H / 2);
+      ctx.textAlign = 'left';
+      return;
+    }
+
+    clipPlot(g, 0, H);
+    for (i = 0; i < list.length; i++) {
+      var ch = list[i], col = seriesColor(ch.index);
+      var span = (ch.max - ch.min) || 1;
+      ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.beginPath();
+      var pen = false, lastX = 0, lastY = 0;
+      for (var k = i0; k <= i1; k++) {
+        var raw = ch.values[k];
+        if (raw === null) { pen = false; continue; }
+        var val = state.normalize ? (raw - ch.min) / span : raw;
+        var x = xOf(state.times[k], g), y2 = yv(val);
+        if (ch.type === 'digital' || ch.type === 'state') {
+          if (!pen) { ctx.moveTo(x, y2); pen = true; } else { ctx.lineTo(x, lastY); ctx.lineTo(x, y2); }
+        } else {
+          if (!pen) { ctx.moveTo(x, y2); pen = true; } else ctx.lineTo(x, y2);
+        }
+        lastX = x; lastY = y2;
+      }
+      ctx.stroke();
+      if (list.length <= 4 && pen) {
+        ctx.font = '500 11px ' + MONO; ctx.fillStyle = col;
+        ctx.fillText(' ' + ch.name, Math.min(lastX, g.padL + g.plotW - 4), lastY - 6);
+      }
+    }
+    ctx.restore();
+    state._overlayScale = { mn: mn, mx: mx, top: top, bot: bot };
+  }
+
+  function drawCursors(g, H) {
+    function line(t, color, tag) {
+      var x = xOf(t, g);
+      if (x < g.padL - 1 || x > g.padL + g.plotW + 1) return;
+      ctx.save();
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
+      ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, 0); ctx.lineTo(Math.round(x) + 0.5, H); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.fillRect(x - 8, 0, 16, 14);
+      ctx.fillStyle = '#fff'; ctx.font = '600 10px ' + MONO; ctx.textAlign = 'center';
+      ctx.fillText(tag, x, 10); ctx.textAlign = 'left';
+      ctx.restore();
+    }
+    if (state.hoverX !== null) {
+      var hx = Math.round(state.hoverX) + 0.5;
+      if (hx >= g.padL && hx <= g.padL + g.plotW) {
+        ctx.save();
+        ctx.strokeStyle = css('--ink-3'); ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+        ctx.beginPath(); ctx.moveTo(hx, 0); ctx.lineTo(hx, H); ctx.stroke();
+        ctx.restore();
+      }
+    }
+    if (state.cursorA !== null) line(state.cursorA, css('--cursor-a'), 'A');
+    if (state.cursorB !== null) line(state.cursorB, css('--cursor-b'), 'B');
+  }
+
+  function drawAxis(g) {
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    var W = g.W, H = 30;
+    ax.style.width = W + 'px';
+    ax.width = Math.round(W * dpr); ax.height = Math.round(H * dpr);
+    axc.setTransform(dpr, 0, 0, dpr, 0, 0);
+    axc.clearRect(0, 0, W, H);
+    if (!state.times.length) return;
+
+    var r = ticksNow(g);
+    axc.strokeStyle = css('--axis'); axc.lineWidth = 1;
+    axc.beginPath();
+    axc.fillStyle = css('--ink-3'); axc.font = '400 10.5px ' + MONO; axc.textAlign = 'center';
+    for (var i = 0; i < r.ticks.length; i++) {
+      var x = Math.round(xOf(r.ticks[i], g)) + 0.5;
+      if (x < g.padL - 1 || x > g.padL + g.plotW + 1) continue;
+      axc.moveTo(x, 0); axc.lineTo(x, 4);
+      axc.fillText(fmtTime(r.ticks[i], r.step), x, 17);
+    }
+    axc.stroke();
+
+    if (state.timeUnit || state.timeKind === 'index') {
+      axc.textAlign = 'right'; axc.fillStyle = css('--ink-3'); axc.font = '400 10px ' + MONO;
+      axc.fillText(state.timeKind === 'index' ? '샘플 번호' : '시간 [' + state.timeUnit + ']', W - 12, 17);
+    }
+    axc.textAlign = 'left';
+  }
+
+  /* ============================ 툴팁 ============================ */
+  function updateTip(g) {
+    if (state.mode !== 'overlay' || state.hoverX === null || !state.channels.length) { tip.style.display = 'none'; return; }
+    var lay = layout();
+    if (!lay.list.length) { tip.style.display = 'none'; return; }
+    var idx = nearestIdx(tOf(state.hoverX, g));
+    var html = '<div class="tt">' + esc(fmtTime(state.times[idx])) + '</div>';
+    for (var i = 0; i < lay.list.length; i++) {
+      var ch = lay.list[i];
+      html += '<div class="row"><span class="dot" style="background:' + seriesColor(ch.index) + '"></span>' +
+        '<span class="k">' + esc(ch.name) + '</span><span class="v">' + esc(fmtVal(ch, ch.values[idx])) + '</span></div>';
+    }
+    tip.innerHTML = html;
+    tip.style.display = 'block';
+    var w = tip.offsetWidth, x = state.hoverX + 16;
+    if (x + w > g.W - 6) x = state.hoverX - w - 16;
+    tip.style.left = Math.max(6, x) + 'px';
+    tip.style.top = '18px';
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+
+  /* ============================ 채널 목록 ============================ */
+  var TYPE_LABEL = { digital: 'DIG', analog: 'ANA', state: 'STATE' };
+
+  function renderRail() {
+    var host = $('chanList'), q = state.query.toLowerCase();
+    var shown = state.channels.filter(function (c) {
+      if (state.filter !== 'all' && c.type !== state.filter) return false;
+      return !q || c.name.toLowerCase().indexOf(q) >= 0;
+    });
+    var selCount = state.channels.filter(function (c) { return c.selected; }).length;
+    $('railCount').textContent = selCount + ' / ' + state.channels.length;
+
+    if (!shown.length) {
+      host.innerHTML = '<div class="railempty">' + (state.channels.length ? '검색 결과가 없습니다' : '불러온 채널이 없습니다') + '</div>';
+      return;
+    }
+    var frag = document.createDocumentFragment();
+    shown.forEach(function (ch) {
+      var row = document.createElement('label');
+      row.className = 'chan' + (ch.selected ? '' : ' off');
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = ch.selected;
+      cb.addEventListener('change', function () {
+        ch.selected = cb.checked;
+        row.classList.toggle('off', !ch.selected);
+        $('railCount').textContent = state.channels.filter(function (c) { return c.selected; }).length + ' / ' + state.channels.length;
+        draw(); renderReadout(); renderLegend();
+      });
+      var sw = document.createElement('span');
+      sw.className = 'swatch'; sw.style.background = chanColor(ch);
+      var nm = document.createElement('span');
+      nm.className = 'nm'; nm.textContent = ch.name; nm.title = ch.name;
+      var ty = document.createElement('span');
+      ty.className = 'ty'; ty.textContent = TYPE_LABEL[ch.type];
+      row.appendChild(cb); row.appendChild(sw); row.appendChild(nm); row.appendChild(ty);
+      frag.appendChild(row);
+    });
+    host.innerHTML = ''; host.appendChild(frag);
+  }
+
+  function renderLegend() {
+    var host = $('legend');
+    if (state.mode !== 'overlay') { host.innerHTML = ''; return; }
+    var lay = layout();
+    if (lay.list.length < 2) { host.innerHTML = ''; return; }
+    host.innerHTML = lay.list.map(function (ch) {
+      return '<span class="item"><span class="dot" style="background:' + seriesColor(ch.index) + '"></span>' + esc(ch.name) + '</span>';
+    }).join('');
+  }
+
+  /* ============================ 판독 표 ============================ */
+  function edgeCount(ch, ia, ib) {
+    var lo = Math.min(ia, ib), hi = Math.max(ia, ib), n = 0;
+    for (var i = lo + 1; i <= hi; i++) if (ch.values[i] !== null && ch.values[i - 1] !== null && ch.values[i] !== ch.values[i - 1]) n++;
+    return n;
+  }
+
+  function renderReadout() {
+    var tb = $('readout').querySelector('tbody');
+    var list = state.channels.filter(function (c) { return c.selected; });
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="7" class="dim">선택된 채널이 없습니다</td></tr>'; return; }
+    var ia = state.cursorA === null ? -1 : nearestIdx(state.cursorA);
+    var ib = state.cursorB === null ? -1 : nearestIdx(state.cursorB);
+
+    tb.innerHTML = list.map(function (ch) {
+      var va = ia < 0 ? null : ch.values[ia], vb = ib < 0 ? null : ch.values[ib];
+      var d = '—';
+      if (ia >= 0 && ib >= 0) {
+        if (ch.type === 'analog') d = (va !== null && vb !== null) ? fmtNum(vb - va) : '—';
+        else d = edgeCount(ch, ia, ib) + ' 에지';
+      }
+      return '<tr>' +
+        '<td class="name"><span class="dot" style="background:' + chanColor(ch) + '"></span>' + esc(ch.name) + '</td>' +
+        '<td class="dim">' + TYPE_LABEL[ch.type] + '</td>' +
+        '<td>' + esc(fmtVal(ch, va)) + '</td>' +
+        '<td>' + esc(fmtVal(ch, vb)) + '</td>' +
+        '<td class="dim">' + esc(d) + '</td>' +
+        '<td class="dim">' + esc(ch.type === 'state' ? ch.states.length + ' 상태' : fmtVal(ch, ch.min)) + '</td>' +
+        '<td class="dim">' + esc(ch.type === 'state' ? '—' : fmtVal(ch, ch.max)) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function renderCursorChips() {
+    $('curA').textContent = state.cursorA === null ? '—' : fmtTime(state.cursorA);
+    $('curB').textContent = state.cursorB === null ? '—' : fmtTime(state.cursorB);
+    if (state.cursorA === null || state.cursorB === null) { $('curD').textContent = '—'; return; }
+    var d = Math.abs(state.cursorB - state.cursorA);
+    if (state.timeKind === 'date' || state.timeKind === 'clock') {
+      $('curD').textContent = d >= 1000 ? (d / 1000).toFixed(3) + ' s' : d.toFixed(0) + ' ms';
+    } else if (state.timeKind === 'index') {
+      $('curD').textContent = Math.round(d) + ' 샘플';
+    } else {
+      $('curD').textContent = fmtNum(d) + (state.timeUnit ? ' ' + state.timeUnit : '');
+    }
+  }
+
+  function renderAll() { renderRail(); renderLegend(); draw(); renderReadout(); renderCursorChips(); }
+
+  /* ============================ 파일 메타 ============================ */
+  function fmtDur(span) {
+    if (state.timeKind === 'date' || state.timeKind === 'clock') {
+      if (span < 1000) return Math.round(span) + ' ms';
+      if (span < 60000) return (span / 1000).toFixed(2) + ' s';
+      return Math.floor(span / 60000) + '분 ' + Math.round(span % 60000 / 1000) + '초';
+    }
+    if (state.timeKind === 'index') return state.times.length + ' 샘플';
+    return fmtNum(span) + (state.timeUnit ? ' ' + state.timeUnit : '');
+  }
+
+  function renderMeta() {
+    var el = $('fileMeta');
+    if (!state.channels.length) { el.innerHTML = ''; return; }
+    var d = dataSpan();
+    el.innerHTML = '<b>' + esc(state.fileName) + '</b>' +
+      (state.sheetName ? '<span class="sep">·</span>' + esc(state.sheetName) : '') +
+      '<span class="sep">·</span>' + state.channels.length + ' 채널' +
+      '<span class="sep">·</span>' + state.times.length + ' 샘플' +
+      '<span class="sep">·</span>' + fmtDur(d.hi - d.lo) +
+      (state.isSample ? '<span class="sep">·</span><span class="tag">예시 데이터</span>' : '');
+  }
+
+  /* ============================ 상호작용 ============================ */
+  function zoomAt(clientX, factor) {
+    var g = geom(), rect = wrap.getBoundingClientRect();
+    var x = Math.min(Math.max(clientX - rect.left, g.padL), g.padL + g.plotW);
+    var anchor = tOf(x, g);
+    clampView(anchor - (anchor - state.view.t0) * factor, anchor + (state.view.t1 - anchor) * factor);
+  }
+
+  var drag = null;
+
+  wrap.addEventListener('wheel', function (e) {
+    if (!state.channels.length) return;
+    var wantZoom = state.mode === 'overlay' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey;
+    if (!wantZoom) return;
+    e.preventDefault();
+    zoomAt(e.clientX, Math.exp((e.deltaY > 0 ? 1 : -1) * 0.2));
+    draw();
+  }, { passive: false });
+
+  wrap.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0 || !state.channels.length) return;
+    var g = geom(), rect = wrap.getBoundingClientRect();
+    drag = { x: e.clientX, v0: state.view.t0, v1: state.view.t1, moved: false, shift: e.shiftKey, px: e.clientX - rect.left };
+    try { wrap.setPointerCapture(e.pointerId); } catch (err) { }
+  });
+
+  wrap.addEventListener('pointermove', function (e) {
+    var rect = wrap.getBoundingClientRect(), g = geom();
+    state.hoverX = e.clientX - rect.left;
+    if (drag) {
+      var dx = e.clientX - drag.x;
+      if (Math.abs(dx) > 3) { drag.moved = true; wrap.classList.add('panning'); }
+      if (drag.moved) {
+        var dt = dx / g.plotW * (drag.v1 - drag.v0);
+        clampView(drag.v0 - dt, drag.v1 - dt);
+      }
+    }
+    draw(); updateTip(g);
+  });
+
+  wrap.addEventListener('pointerup', function (e) {
+    var g = geom(), rect = wrap.getBoundingClientRect();
+    if (drag && !drag.moved) {
+      var px = e.clientX - rect.left;
+      if (px >= g.padL && px <= g.padL + g.plotW) {
+        var t = tOf(px, g), d = dataSpan();
+        if (t >= d.lo && t <= d.hi) {
+          if (drag.shift) state.cursorB = t; else state.cursorA = t;
+          renderCursorChips(); renderReadout();
+        }
+      }
+    }
+    drag = null; wrap.classList.remove('panning');
+    draw();
+  });
+
+  wrap.addEventListener('pointerleave', function () {
+    state.hoverX = null; drag = null; wrap.classList.remove('panning');
+    tip.style.display = 'none'; draw();
+  });
+
+  wrap.addEventListener('dblclick', function () { if (state.channels.length) { fit(); draw(); } });
+  wrap.addEventListener('scroll', function () { draw(); });
+
+  window.addEventListener('resize', function () { draw(); });
+  if (window.ResizeObserver) new ResizeObserver(function () { draw(); }).observe(wrap);
+  if (window.matchMedia) {
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) mq.addEventListener('change', function () { renderAll(); });
+  }
+
+  window.addEventListener('keydown', function (e) {
+    if (!state.channels.length) return;
+    var tgt = e.target && e.target.tagName;
+    if (tgt === 'INPUT' || tgt === 'SELECT' || tgt === 'TEXTAREA') return;
+    var g = geom(), span = state.view.t1 - state.view.t0;
+    if (e.key === '+' || e.key === '=') { zoomAt(wrap.getBoundingClientRect().left + g.padL + g.plotW / 2, 0.8); draw(); }
+    else if (e.key === '-' || e.key === '_') { zoomAt(wrap.getBoundingClientRect().left + g.padL + g.plotW / 2, 1.25); draw(); }
+    else if (e.key === 'ArrowLeft') { clampView(state.view.t0 - span * 0.15, state.view.t1 - span * 0.15); draw(); }
+    else if (e.key === 'ArrowRight') { clampView(state.view.t0 + span * 0.15, state.view.t1 + span * 0.15); draw(); }
+    else if (e.key === '0') { fit(); draw(); }
+    else return;
+    e.preventDefault();
+  });
+
+  /* ============================ 컨트롤 ============================ */
+  function setMode(m) {
+    state.mode = m;
+    $('modeLanes').setAttribute('aria-pressed', String(m === 'lanes'));
+    $('modeOverlay').setAttribute('aria-pressed', String(m === 'overlay'));
+    $('normWrap').style.display = m === 'overlay' ? 'flex' : 'none';
+    tip.style.display = 'none';
+    var lay = layout();
+    $('notice').textContent = (m === 'overlay' && lay.over)
+      ? '겹쳐보기는 최대 ' + MAX_OVERLAY + '개 채널까지 표시합니다 (선택된 ' + (lay.list.length + lay.over) + '개 중 앞 ' + MAX_OVERLAY + '개).'
+      : '';
+    renderAll();
+  }
+  $('modeLanes').addEventListener('click', function () { setMode('lanes'); });
+  $('modeOverlay').addEventListener('click', function () { setMode('overlay'); });
+  $('normChk').addEventListener('change', function () { state.normalize = this.checked; draw(); });
+
+  function setOrientation(o) {
+    if (state.orientation === o) return;
+    state.orientation = o;
+    $('orRows').setAttribute('aria-pressed', String(o === 'rows'));
+    $('orCols').setAttribute('aria-pressed', String(o === 'cols'));
+    if (state.lastAOA) { buildDataset(state.lastAOA, state.sheetName); renderMeta(); }
+  }
+  $('orRows').addEventListener('click', function () { setOrientation('rows'); });
+  $('orCols').addEventListener('click', function () { setOrientation('cols'); });
+
+  ['fAll', 'fDig', 'fAna', 'fSta'].forEach(function (id, i) {
+    var key = ['all', 'digital', 'analog', 'state'][i];
+    $(id).addEventListener('click', function () {
+      state.filter = key;
+      ['fAll', 'fDig', 'fAna', 'fSta'].forEach(function (o) { $(o).setAttribute('aria-pressed', String(o === id)); });
+      renderRail();
+    });
+  });
+  $('searchInput').addEventListener('input', function () { state.query = this.value; renderRail(); });
+  $('selAll').addEventListener('click', function () { state.channels.forEach(function (c) { c.selected = true; }); renderAll(); });
+  $('selNone').addEventListener('click', function () { state.channels.forEach(function (c) { c.selected = false; }); renderAll(); });
+  $('btnFit').addEventListener('click', function () { if (state.channels.length) { fit(); draw(); } });
+  $('btnClear').addEventListener('click', function () { state.cursorA = state.cursorB = null; renderCursorChips(); renderReadout(); draw(); });
+
+  /* ============================ 파일 입출력 ============================ */
+  $('btnOpen').addEventListener('click', function () { $('fileInput').click(); });
+  $('fileInput').addEventListener('change', function () { if (this.files && this.files[0]) readFile(this.files[0]); });
+
+  function readFile(file) {
+    var fr = new FileReader();
+    fr.onerror = function () { fail('파일을 읽지 못했습니다.'); };
+    fr.onload = function () {
+      try {
+        var wb = XLSX.read(new Uint8Array(fr.result), { type: 'array', cellDates: true });
+        state.wb = wb; state.fileName = file.name; state.isSample = false;
+        var sel = $('sheetSel');
+        sel.innerHTML = wb.SheetNames.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('');
+        sel.style.display = wb.SheetNames.length > 1 ? 'inline-block' : 'none';
+        loadSheet(wb.SheetNames[0]);
+      } catch (err) {
+        fail('엑셀 파일을 해석하지 못했습니다: ' + err.message);
+      }
+    };
+    fr.readAsArrayBuffer(file);
+  }
+
+  function loadSheet(name) {
+    var ws = state.wb.Sheets[name];
+    if (!ws) { fail('시트를 찾을 수 없습니다.'); return; }
+    var aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
+    state.lastAOA = aoa;
+    buildDataset(aoa, name);
+    renderMeta();
+  }
+  $('sheetSel').addEventListener('change', function () { loadSheet(this.value); });
+
+  var dropEl = $('drop'), dragDepth = 0;
+  window.addEventListener('dragenter', function (e) { e.preventDefault(); dragDepth++; dropEl.classList.add('on'); });
+  window.addEventListener('dragover', function (e) { e.preventDefault(); });
+  window.addEventListener('dragleave', function () { if (--dragDepth <= 0) { dragDepth = 0; dropEl.classList.remove('on'); } });
+  window.addEventListener('drop', function (e) {
+    e.preventDefault(); dragDepth = 0; dropEl.classList.remove('on');
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
+  });
+
+  /* ============================ 샘플 로그 ============================ */
+  function sampleAOA() {
+    var N = 420, dt = 0.01, seed = 20260902;
+    function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
+    var head = ['Time [s]'];
+    for (var i = 0; i < N; i++) head.push(+(i * dt).toFixed(3));
+    var rows = [head];
+    function add(name, fn) { var r = [name]; for (var k = 0; k < N; k++) r.push(fn(k * dt, k)); rows.push(r); }
+    function inRange(t, a, b) { return t >= a && t < b ? 1 : 0; }
+    var running = function (t) { return inRange(t, 0.30, 2.60) || inRange(t, 3.00, 4.00); };
+
+    add('DI_00_CYCLE_START', function (t) { return inRange(t, 0.20, 0.28); });
+    add('DI_01_ESTOP_OK', function (t) { return inRange(t, 2.60, 2.95) ? 0 : 1; });
+    add('DI_02_HOME_SW', function (t) { return (t < 0.50 || t > 3.98) ? 1 : 0; });
+    add('DI_03_PART_PRESENT', function (t) { return inRange(t, 0.50, 2.60) || inRange(t, 3.05, 4.05); });
+    add('DO_10_MOTOR_EN', running);
+    add('DO_11_VALVE_A', function (t) { return running(t) && Math.floor(t / 0.22) % 2 === 0 ? 1 : 0; });
+    add('DO_12_VALVE_B', function (t) { return running(t) && Math.floor(t / 0.22) % 2 === 1 ? 1 : 0; });
+    add('DO_13_CLAMP', function (t) { return inRange(t, 0.70, 2.45) || inRange(t, 3.20, 3.95); });
+    add('AI_TEMP_BARREL1', function (t) { return +(182 + 6 * Math.sin(t * 1.1) + rnd() * 0.6).toFixed(2); });
+    add('AI_TEMP_BARREL2', function (t) { return +(176 + 5 * Math.sin(t * 0.9 + 1) + rnd() * 0.6).toFixed(2); });
+    add('AI_PRESSURE_BAR', function (t) { return +((running(t) ? 42 + 8 * Math.sin(t * 5.5) : 3) + rnd() * 1.2).toFixed(2); });
+    add('AI_MOTOR_RPM', function (t) { return Math.round((running(t) ? 1450 * (1 - Math.exp(-(t % 3) * 4)) : 0) + rnd() * 12); });
+    add('AI_TORQUE_NM', function (t) { return +((running(t) ? 18 + 6 * Math.sin(t * 7) : 0.4) + rnd()).toFixed(2); });
+    add('CYCLE_COUNT', function (t) { return 1204 + (t > 2.6 ? 1 : 0) + (t > 4.05 ? 1 : 0); });
+    add('SEQ_STATE', function (t) {
+      if (t < 0.20) return 'IDLE';
+      if (t < 0.50) return 'HOMING';
+      if (t < 2.60) return 'RUN';
+      if (t < 2.95) return 'FAULT';
+      if (t < 3.00) return 'HOLD';
+      if (t < 4.00) return 'RUN';
+      return 'IDLE';
+    });
+    return rows;
+  }
+
+  function loadSample() {
+    state.wb = null; state.isSample = true;
+    state.fileName = 'sample_io_log.xlsx';
+    $('sheetSel').style.display = 'none';
+    state.orientation = 'rows';
+    $('orRows').setAttribute('aria-pressed', 'true');
+    $('orCols').setAttribute('aria-pressed', 'false');
+    state.lastAOA = sampleAOA();
+    buildDataset(state.lastAOA, 'Log');
+    renderMeta();
+  }
+  $('btnSample').addEventListener('click', loadSample);
+
+  /* ============================ 시작 ============================ */
+  $('readoutHint').textContent = '클릭 = 커서 A · Shift+클릭 = 커서 B · 드래그 = 이동 · Ctrl+휠 = 시간축 확대 · 더블클릭 = 전체 보기';
+  loadSample();
+
+})();
+</script>
+</body>
+</html>
