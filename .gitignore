@@ -1,0 +1,15 @@
+# CMake / Visual Studio 산출물
+build/
+out/
+.vs/
+CMakeUserPresets.json
+*.user
+
+# 바이너리
+*.dll
+*.exe
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.obj
