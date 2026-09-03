@@ -63,6 +63,34 @@ VS Code 확장을 하나도 안 깔아도 빌드는 그대로 됩니다.
   `build.bat` 은 `scripts/build.ps1` 을 부르는 얇은 껍데기입니다. PowerShell 실행
   정책이 막혀 있어도 되게 `-ExecutionPolicy Bypass` 를 넣어 뒀습니다.
 
+### 빌드가 안 될 때
+
+**먼저 이것부터.** VS Code 통합 터미널의 기본 셸은 PowerShell 인데, PowerShell 은
+현재 폴더의 실행 파일을 그냥 이름만으로 실행하지 않습니다.
+
+```powershell
+build.bat      # PowerShell 에서는 동작하지 않습니다
+.\build.bat    # 앞의 .\ 가 반드시 필요합니다
+```
+
+그래도 이상하면 환경 점검 스크립트를 돌리세요. cmake · Visual Studio · 줄바꿈
+문자까지 한 번에 확인하고, 빠진 게 있으면 무엇을 설치해야 하는지 알려 줍니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\diagnose.ps1
+```
+
+| 증상 | 원인과 조치 |
+|---|---|
+| 아무 출력도 없이 프롬프트로 돌아옴 | PowerShell 에서 `.\` 없이 실행했을 가능성이 큽니다. `.\build.bat` 으로 다시 해 보세요 |
+| `'build.bat' 용어가 인식되지 않습니다` | 같은 원인입니다 (`.\build.bat`) |
+| `cmake 을 찾지 못했습니다` | CMake 3.18+ 를 설치하고 PATH 에 추가하세요. VS 번들 CMake 는 보통 버전이 낮고 PATH 에도 없습니다 |
+| `Visual Studio 의 C++ 도구를 찾지 못했습니다` | 설치 관리자에서 "C++를 사용한 데스크톱 개발" 워크로드를 추가하세요. 이미 있다면 `.\build.bat -Generator "Visual Studio 15 2017"` 로 직접 지정 |
+| 배치 파일이 이상하게 동작 | 줄바꿈이 LF 로 체크아웃된 경우입니다. `.gitattributes` 가 CRLF 를 강제하므로 `git pull` 후 `git checkout -- build.bat` 로 다시 받으세요 |
+
+`Ctrl+Shift+B` 는 `build.bat` 을 거치지 않고 `powershell.exe` 를 직접 부르므로
+위 문제들과 무관하게 동작합니다. 터미널에서 막히면 이쪽을 써 보세요.
+
 **다만 확장 없이는 두 가지가 안 됩니다.**
 
 | 안 되는 것 | 대안 |
@@ -196,6 +224,7 @@ CMakeLists.txt          공통 컴파일/링크 설정 (경고 수준, 보안 �
 CMakePresets.json       구성/빌드/테스트 프리셋
 build.bat               확장 없이 쓰는 빌드 진입점 (scripts/build.ps1 호출)
 scripts/build.ps1       Visual Studio 자동 감지 · 구성 · 빌드 · 테스트 · 실행
+scripts/diagnose.ps1    빌드 환경 점검 (cmake · VS · 줄바꿈 문자)
 .vscode/                빌드 작업(확장 불필요) · 디버그 구성 · 확장 추천
 src/core/               logcore.dll
   include/logcore/logcore.h   공개 C ABI — DLL 경계를 넘는 유일한 계약

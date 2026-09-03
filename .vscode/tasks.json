@@ -1,14 +1,18 @@
 {
   // 모두 VS Code 기본 기능만 씁니다. 확장을 하나도 안 깔아도 그대로 동작합니다.
   // ($msCompile 문제 표시기도 VS Code 내장이라 컴파일 오류가 클릭 가능합니다.)
+  //
+  // build.bat 을 거치지 않고 powershell.exe 를 직접 부릅니다. 통합 터미널이
+  // PowerShell 이든 cmd 든 똑같이 동작하고, cmd 의 배치 파일 해석 문제를 피합니다.
   "version": "2.0.0",
   "tasks": [
     {
       // Ctrl+Shift+B 로 실행되는 기본 빌드 작업
       "label": "빌드 (Debug)",
       "type": "shell",
-      "command": "${workspaceFolder}\\build.bat",
-      "args": ["-Config", "Debug"],
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+               "${workspaceFolder}/scripts/build.ps1", "-Config", "Debug"],
       "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": ["$msCompile"],
@@ -18,8 +22,9 @@
     {
       "label": "빌드 (Release)",
       "type": "shell",
-      "command": "${workspaceFolder}\\build.bat",
-      "args": ["-Config", "Release"],
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+               "${workspaceFolder}/scripts/build.ps1", "-Config", "Release"],
       "options": { "cwd": "${workspaceFolder}" },
       "group": "build",
       "problemMatcher": ["$msCompile"],
@@ -28,8 +33,9 @@
     {
       "label": "빌드 + 테스트",
       "type": "shell",
-      "command": "${workspaceFolder}\\build.bat",
-      "args": ["-Config", "Debug", "-Test"],
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+               "${workspaceFolder}/scripts/build.ps1", "-Config", "Debug", "-Test"],
       "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "test", "isDefault": true },
       "problemMatcher": ["$msCompile"],
@@ -39,8 +45,9 @@
     {
       "label": "정리 후 다시 빌드",
       "type": "shell",
-      "command": "${workspaceFolder}\\build.bat",
-      "args": ["-Config", "Debug", "-Clean"],
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+               "${workspaceFolder}/scripts/build.ps1", "-Config", "Debug", "-Clean"],
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": ["$msCompile"],
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
@@ -49,8 +56,9 @@
     {
       "label": "빌드 후 실행",
       "type": "shell",
-      "command": "${workspaceFolder}\\build.bat",
-      "args": ["-Config", "Debug", "-Run"],
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+               "${workspaceFolder}/scripts/build.ps1", "-Config", "Debug", "-Run"],
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": ["$msCompile"],
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     LogScope 를 구성하고 빌드합니다. VS Code 확장이 없어도, CMake 프리셋을 몰라도
     이 스크립트 하나로 빌드됩니다.

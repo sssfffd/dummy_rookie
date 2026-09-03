@@ -1,7 +1,7 @@
 # 06 · Visual Studio 2017 지원, VS Code 확장 없이 쓰기
 
 - **날짜** 2026-09-03
-- **커밋** 이 커밋
+- **커밋** [`95ba55e`](../../../commit/95ba55e) Support Visual Studio 2017 and a build path with no VS Code extensions
 - **바뀐 파일** `CMakeLists.txt`, `CMakePresets.json`, `scripts/build.ps1`(신규), `build.bat`(신규), `.vscode/tasks.json`, `.vscode/launch.json`, `.vscode/settings.json`, `src/core/xlsx_reader.cpp`, `README.md`
 
 ## 요청

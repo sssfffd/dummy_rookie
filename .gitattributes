@@ -1,0 +1,17 @@
+# 기본: 저장소에는 LF 로 담고, 체크아웃할 때 플랫폼에 맞춘다.
+* text=auto
+
+# Windows 도구가 직접 읽는 파일은 반드시 CRLF 여야 한다.
+#   cmd.exe 는 LF 전용 .bat 을 제대로 해석하지 못하고,
+#   Visual Studio 도구들도 CRLF 를 기대한다.
+*.bat        text eol=crlf
+*.cmd        text eol=crlf
+*.ps1        text eol=crlf
+*.manifest   text eol=crlf
+*.sln        text eol=crlf
+*.vcxproj    text eol=crlf
+*.props      text eol=crlf
+
+# 바이너리
+*.png binary
+*.xlsx binary

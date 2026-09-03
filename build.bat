@@ -1,9 +1,43 @@
 @echo off
-REM LogScope 빌드. cmd 에서 그냥 build.bat 이라고 치면 됩니다.
-REM   build.bat                     Debug 빌드
-REM   build.bat -Config Release      Release 빌드
-REM   build.bat -Test                빌드 후 테스트
-REM   build.bat -Clean -Run          처음부터 빌드하고 실행
+setlocal
+REM ---------------------------------------------------------------------------
+REM LogScope build entry point.
 REM
-REM PowerShell 실행 정책이 막혀 있어도 되도록 -ExecutionPolicy Bypass 를 줍니다.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build.ps1" %*
+REM   build.bat                     Debug build
+REM   build.bat -Config Release     Release build
+REM   build.bat -Test               build, then run tests
+REM   build.bat -Clean -Run         clean rebuild, then run
+REM
+REM This file is a thin wrapper: all logic lives in scripts\build.ps1.
+REM Kept ASCII-only on purpose. A .bat with UTF-8 text is misread by cmd.exe
+REM on non-UTF-8 code pages (CP949 on Korean Windows).
+REM ---------------------------------------------------------------------------
+
+set "PS1=%~dp0scripts\build.ps1"
+
+echo [build.bat] repo   : %~dp0
+echo [build.bat] script : %PS1%
+echo.
+
+if not exist "%PS1%" (
+  echo [build.bat] ERROR: script not found.
+  echo [build.bat] Run this from the repository root, or re-clone the repo.
+  exit /b 1
+)
+
+where powershell.exe >nul 2>&1
+if errorlevel 1 (
+  echo [build.bat] ERROR: powershell.exe not found on PATH.
+  exit /b 1
+)
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
+set "RC=%ERRORLEVEL%"
+
+echo.
+if not "%RC%"=="0" (
+  echo [build.bat] FAILED - exit code %RC%
+) else (
+  echo [build.bat] OK
+)
+exit /b %RC%
