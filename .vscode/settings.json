@@ -1,5 +1,6 @@
 {
-  // ---- CMake ----------------------------------------------------------
+  // ---- CMake Tools 확장을 쓸 때만 의미가 있는 값들 -----------------------
+  // 확장을 안 깔았으면 그냥 무시됩니다. 지워도 빌드에는 영향이 없습니다.
   // CMakePresets.json 을 쓴다. 키트(kit) 선택 대신 프리셋 선택으로 동작한다.
   "cmake.useCMakePresets": "always",
   "cmake.configureOnOpen": true,
@@ -8,7 +9,7 @@
   // 상태 표시줄 대신 사이드바 CMake 패널을 쓴다.
   "cmake.options.statusBarVisibility": "compact",
 
-  // ---- IntelliSense ---------------------------------------------------
+  // ---- IntelliSense (C/C++ 확장을 쓸 때) --------------------------------
   // 인클루드 경로와 컴파일 옵션을 CMake 에서 그대로 가져온다.
   // 이걸 켜 두면 c_cpp_properties.json 을 손으로 관리할 필요가 없다.
   "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",

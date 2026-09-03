@@ -1,43 +1,57 @@
 {
+  // 주의: VS Code 안에서의 디버깅은 C/C++ 확장(ms-vscode.cpptools)이 있어야 합니다.
+  // cppvsdbg 디버거 자체가 그 확장에서 오기 때문에, 확장이 없으면 F5 가 동작하지
+  // 않습니다. 확장을 안 쓰신다면 Visual Studio 로 build\vs2017\LogScope.sln 을 열어
+  // 디버깅하세요 (README 의 "확장 없이 쓰기" 참고).
   "version": "0.2.0",
   "configurations": [
     {
-      // F5. CMake 패널에서 고른 프리셋/구성의 산출물을 그대로 띄운다.
-      // 디버그 빌드를 골랐으면 디버그 바이너리가 실행된다.
-      "name": "logscope 실행",
+      // 확장이 cpptools 하나뿐일 때 쓰는 구성. 경로를 직접 가리킵니다.
+      // 다른 Visual Studio 버전으로 빌드했다면 vs2017 부분을 vs2019 / vs2022 로 바꾸세요.
+      "name": "logscope 실행 (Debug)",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${command:cmake.launchTargetPath}",
+      "program": "${workspaceFolder}/build/vs2017/bin/Debug/logscope.exe",
       "args": [],
-      "cwd": "${command:cmake.getLaunchTargetDirectory}",
+      "cwd": "${workspaceFolder}/build/vs2017/bin/Debug",
       "stopAtEntry": false,
       "console": "internalConsole",
-      "preLaunchTask": "CMake: 빌드"
+      "preLaunchTask": "빌드 (Debug)"
     },
     {
-      // 같은 실행이지만 로그 파일 경로를 인자로 넘긴다. 파일 대화상자를 거치지
-      // 않으므로 파서를 반복해서 디버깅할 때 편하다.
+      // 로그 파일 경로를 물어보고 그 파일을 연 채로 시작합니다. 파일 대화상자를
+      // 안 거치므로 파서를 반복해서 디버깅할 때 편합니다.
       "name": "logscope 실행 (파일 지정)",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${command:cmake.launchTargetPath}",
+      "program": "${workspaceFolder}/build/vs2017/bin/Debug/logscope.exe",
       "args": ["${input:logPath}"],
-      "cwd": "${command:cmake.getLaunchTargetDirectory}",
+      "cwd": "${workspaceFolder}/build/vs2017/bin/Debug",
       "stopAtEntry": false,
       "console": "internalConsole",
-      "preLaunchTask": "CMake: 빌드"
+      "preLaunchTask": "빌드 (Debug)"
     },
     {
-      // 코어 로직 테스트를 콘솔에서 디버깅한다.
       "name": "logcore_test 디버그",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${command:cmake.buildDirectory}/bin/${command:cmake.buildType}/logcore_test.exe",
+      "program": "${workspaceFolder}/build/vs2017/bin/Debug/logcore_test.exe",
       "args": [],
-      "cwd": "${command:cmake.buildDirectory}",
+      "cwd": "${workspaceFolder}/build/vs2017/bin/Debug",
       "stopAtEntry": false,
       "console": "integratedTerminal",
-      "preLaunchTask": "CMake: 빌드"
+      "preLaunchTask": "빌드 (Debug)"
+    },
+    {
+      // CMake Tools 확장까지 쓸 때. 고른 프리셋/구성을 따라가므로 경로를 안 적어도 됩니다.
+      "name": "logscope 실행 (CMake Tools)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "args": [],
+      "cwd": "${command:cmake.getLaunchTargetDirectory}",
+      "stopAtEntry": false,
+      "console": "internalConsole"
     }
   ],
   "inputs": [

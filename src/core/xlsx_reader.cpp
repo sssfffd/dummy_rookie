@@ -40,6 +40,9 @@ constexpr const wchar_t* kRelStyles =
 
 // 신뢰할 수 없는 XML 을 읽을 리더를 만든다. DTD 금지와 깊이 제한을 명시적으로 건다.
 HRESULT make_reader(IStream* s, ComPtr<IXmlReader>& out) {
+    // __uuidof 는 MSVC 확장이지만 MSVC(2017 포함)와 mingw/clang 모두 지원한다.
+    // 이름 있는 GUID 상수(IID_IXmlReader 등)를 쓰면 uuid 라이브러리 링크가 필요한데,
+    // 툴체인마다 어느 .lib 에 들어 있는지가 달라서 이쪽이 더 안전하다.
     HRESULT hr = CreateXmlReader(__uuidof(IXmlReader), out.put_void(), nullptr);
     if (FAILED(hr)) return hr;
     hr = out->SetProperty(XmlReaderProperty_DtdProcessing, DtdProcessing_Prohibit);

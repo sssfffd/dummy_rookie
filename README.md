@@ -33,68 +33,110 @@ UI 를 손봐도 파싱 로직이 흔들리지 않습니다.
 
 ### 미리 있어야 하는 것
 
-VS Code 자체에는 컴파일러가 없습니다. 아래 두 가지가 먼저 깔려 있어야 합니다.
+1. **Visual Studio 2017 (15.3 이상) / 2019 / 2022** 중 하나 — 설치 관리자에서
+   **"C++를 사용한 데스크톱 개발"** 워크로드를 고르세요. MSVC 컴파일러와 Windows SDK 가
+   들어옵니다. VS Code 자체에는 컴파일러가 없어서 이건 반드시 필요합니다.
+   (15.3 미만이면 `/std:c++17` 이 없어서 구성 단계에서 명확한 오류를 냅니다.)
+2. **CMake 3.18 이상** — [cmake.org](https://cmake.org/download/) 에서 받아
+   설치 중 *Add CMake to the system PATH* 를 켜세요. Visual Studio 에 딸려 오는
+   CMake 는 PATH 에 없는 경우가 많고, VS2017 번들 버전은 대체로 너무 낮습니다.
+   `CMakePresets.json` 을 쓰려면 3.21 이상이 필요합니다.
 
-1. **MSVC 툴체인** — [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/)
-   (Visual Studio 2022 전체를 깔아도 됩니다). 설치기에서 **"C++를 사용한 데스크톱 개발"**
-   워크로드를 고르면 MSVC v143 · Windows 11 SDK · CMake · Ninja 가 함께 들어옵니다.
-2. **VS Code 확장** 두 개 — 저장소를 열면 설치를 권합니다 (`.vscode/extensions.json`).
-   - `ms-vscode.cpptools` — C/C++ 언어 지원과 디버거
-   - `ms-vscode.cmake-tools` — CMake 구성 · 빌드 · 테스트 통합
+### 확장 없이 쓰기 (VS Code 기본 기능만)
 
-### VS Code 에서 (권장)
+VS Code 확장을 하나도 안 깔아도 빌드는 그대로 됩니다.
 
-저장소 폴더를 열면 CMake Tools 가 `CMakePresets.json` 을 읽어 자동으로 구성합니다.
+- **`Ctrl+Shift+B`** — 기본 빌드 작업이 돕니다. 설치된 Visual Studio 를 자동으로
+  찾아 구성하고 Debug 로 빌드합니다. 컴파일 오류는 VS Code 내장 `$msCompile`
+  표시기가 잡아서 클릭하면 해당 줄로 갑니다.
+- `Ctrl+Shift+P` → **Tasks: Run Task** 에 빌드(Release) · 빌드+테스트 ·
+  정리 후 다시 빌드 · 빌드 후 실행이 있습니다.
+- 터미널에서 직접:
 
-1. `Ctrl+Shift+P` → **CMake: Select Configure Preset** → **Visual Studio 2022 (x64)**
-2. `Ctrl+Shift+P` → **CMake: Select Build Preset** → **VS 2022 · Debug**
-3. **`F7`** 로 빌드, **`F5`** 로 디버그 실행, **`Ctrl+Shift+P` → CMake: Run Tests** 로 테스트
+  ```
+  build.bat                     Debug 빌드
+  build.bat -Config Release     Release 빌드
+  build.bat -Test               빌드 후 테스트
+  build.bat -Clean -Run         처음부터 빌드하고 실행
+  ```
 
-빌드는 왼쪽 사이드바의 CMake 패널에서도 다 됩니다. `F5` 는 빌드를 먼저 돌린 뒤
-실행하므로 보통 `F5` 하나면 충분합니다.
+  `build.bat` 은 `scripts/build.ps1` 을 부르는 얇은 껍데기입니다. PowerShell 실행
+  정책이 막혀 있어도 되게 `-ExecutionPolicy Bypass` 를 넣어 뒀습니다.
 
-`launch.json` 에는 세 가지가 들어 있습니다.
+**다만 확장 없이는 두 가지가 안 됩니다.**
+
+| 안 되는 것 | 대안 |
+|---|---|
+| VS Code 안에서 디버깅 (`F5`) | `cppvsdbg` 디버거가 C/C++ 확장에서 오기 때문입니다. **Visual Studio 로 `build\vs2017\LogScope.sln` 을 열어 디버깅하세요.** `logscope` 를 시작 프로젝트로 지정하면 됩니다 — 어차피 Visual Studio 디버거가 VS Code 쪽보다 낫습니다 |
+| C++ IntelliSense (정의로 이동, 자동 완성) | VS Code 기본은 단어 단위 완성만 합니다. 코드 탐색이 필요하면 그때만 Visual Studio 를 쓰거나, C/C++ 확장 하나만 설치하는 것도 방법입니다 |
+
+확장을 못 쓰는 이유가 사내 정책이나 마켓플레이스 차단이라면, C/C++ 와 CMake Tools 는
+둘 다 Microsoft 가 배포하는 확장이라 `.vsix` 파일을 받아 오프라인 설치도 됩니다
+(`code --install-extension <파일>`).
+
+### 확장을 쓸 때
+
+`ms-vscode.cpptools` + `ms-vscode.cmake-tools` 를 설치하면 (폴더를 열면 VS Code 가
+권합니다) 프리셋 기반으로 동작합니다.
+
+1. `Ctrl+Shift+P` → **CMake: Select Configure Preset** → **Visual Studio 2017 (x64)**
+2. `Ctrl+Shift+P` → **CMake: Select Build Preset** → **VS 2017 · Debug**
+3. **`F5`** 로 빌드 + 디버그 실행
+
+`launch.json` 에 네 가지가 들어 있습니다. 앞의 세 개는 경로를 직접 가리켜서
+**C/C++ 확장만 있어도** 동작하고(다른 VS 버전으로 빌드했으면 경로의 `vs2017` 부분만
+바꾸면 됩니다), 마지막 하나는 CMake Tools 가 고른 프리셋을 따라갑니다.
 
 | 구성 | 하는 일 |
 |---|---|
-| **logscope 실행** | 고른 프리셋의 바이너리를 그냥 띄웁니다 |
+| **logscope 실행 (Debug)** | 빌드하고 띄웁니다 |
 | **logscope 실행 (파일 지정)** | 로그 파일 경로를 물어보고 그 파일을 연 채로 시작합니다. 파일 대화상자를 안 거쳐서 파서를 반복 디버깅할 때 편합니다 |
-| **logcore_test 디버그** | 코어 테스트를 콘솔에서 디버깅합니다 |
-
-IntelliSense(인클루드 경로, 매크로)는 CMake 구성에서 그대로 가져오므로
-`c_cpp_properties.json` 을 손댈 일이 없습니다.
+| **logcore_test 디버그** | 코어 테스트를 콘솔에서 |
+| **logscope 실행 (CMake Tools)** | 고른 프리셋/구성을 자동으로 따라갑니다 |
 
 ### 프리셋
 
 | 프리셋 | 생성기 | 언제 |
 |---|---|---|
-| `vs2022` | Visual Studio 17 2022 | **기본값.** 별도 환경 설정이 필요 없고, `build/vs2022/LogScope.sln` 을 Visual Studio 로 열 수도 있습니다 |
-| `ninja-debug` / `ninja-release` | Ninja | 빌드가 훨씬 빠릅니다. MSVC 개발자 환경이 필요한데 CMake Tools 가 보통 알아서 잡습니다(`cmake.useVsDeveloperEnvironment`). 안 잡히면 **개발자 명령 프롬프트**에서 `code .` 로 VS Code 를 띄우세요 |
+| `vs2017` | Visual Studio 15 2017 | **기본값.** `build/vs2017/LogScope.sln` 을 Visual Studio 2017 로 열 수도 있습니다 |
+| `vs2022` | Visual Studio 17 2022 | VS 2022 를 쓸 때 |
+| `ninja-debug` / `ninja-release` | Ninja | 빌드가 훨씬 빠릅니다. MSVC 개발자 환경이 필요하고 Ninja 가 PATH 에 있어야 합니다(VS2017 에는 없을 수 있음). 안 잡히면 **x64 Native Tools Command Prompt** 에서 `code .` 로 VS Code 를 띄우세요 |
 
-### 터미널에서
+터미널에서 프리셋으로:
 
 ```powershell
-cmake --preset vs2022
-cmake --build --preset vs2022-debug
-ctest --preset vs2022-debug
+cmake --preset vs2017
+cmake --build --preset vs2017-debug
+ctest --preset vs2017-debug
 ```
 
-Release 는 `vs2022-release`, 빠른 빌드는 `ninja-debug` / `ninja-release` 로 바꾸면 됩니다.
+### 컴파일러 옵션과 버전 차이
+
+`/permissive-`, `/Zc:__cplusplus`, `/Zc:preprocessor`, `/DEPENDENTLOADFLAG` 는
+Visual Studio 버전마다 있고 없고가 갈립니다. 버전 번호로 짐작하지 않고 구성할 때
+**컴파일러·링커에게 직접 물어본 뒤** 받아 주는 것만 붙입니다
+(`check_cxx_compiler_flag` / `check_linker_flag`). 그래서 VS2017 에서도 구성이
+실패하지 않고, 대신 빠진 완화 기능이 있으면 구성 로그에 경고가 뜹니다.
+
+`/DEPENDENTLOADFLAG` 가 없는 링커라면 정적 임포트 DLL 의 검색 경로가 제한되지
+않으므로, **반드시 쓰기 권한이 없는 폴더(`Program Files` 등)에 설치해서 실행하세요**
+(`docs/SECURITY.md` 3.1).
 
 ### 산출물
 
 ```
-build/<프리셋>/bin/<구성>/
+build/vs2017/bin/Debug/
   logscope.exe
   logcore.dll
 ```
 
-예: `build\vs2022\bin\Debug\`. **두 파일은 반드시 같은 폴더에 있어야 합니다** —
-EXE 가 앱 폴더와 System32 에서만 DLL 을 찾도록 링크돼 있습니다
-(`docs/SECURITY.md` 3.1). 배포할 때도 둘을 함께 옮기세요.
+**두 파일은 반드시 같은 폴더에 있어야 합니다** — EXE 가 앱 폴더와 System32 에서만
+DLL 을 찾도록 링크돼 있습니다. 배포할 때도 둘을 함께 옮기세요.
 
-`/MD` 로 빌드하므로 다른 PC 에 배포하려면
-[Visual C++ 재배포 가능 패키지](https://aka.ms/vs/17/release/vc_redist.x64.exe)가 필요합니다.
+`/MD` 로 빌드하므로 다른 PC 에 배포하려면 해당 Visual Studio 버전의
+Visual C++ 재배포 가능 패키지가 필요합니다
+(VS2017/2019/2022 는 같은 v14x 런타임을 공유하므로
+[최신 x64 재배포판](https://aka.ms/vs/17/release/vc_redist.x64.exe) 하나면 됩니다).
 
 ## 입력 데이터 형식
 
@@ -152,7 +194,9 @@ Windows 의 앱 테마(밝게/어둡게)와 모니터별 DPI 를 따라갑니다
 ```
 CMakeLists.txt          공통 컴파일/링크 설정 (경고 수준, 보안 완화 옵션)
 CMakePresets.json       구성/빌드/테스트 프리셋
-.vscode/                VS Code 확장 추천 · 빌드 작업 · 디버그 구성
+build.bat               확장 없이 쓰는 빌드 진입점 (scripts/build.ps1 호출)
+scripts/build.ps1       Visual Studio 자동 감지 · 구성 · 빌드 · 테스트 · 실행
+.vscode/                빌드 작업(확장 불필요) · 디버그 구성 · 확장 추천
 src/core/               logcore.dll
   include/logcore/logcore.h   공개 C ABI — DLL 경계를 넘는 유일한 계약
   logcore.cpp                 ABI 구현

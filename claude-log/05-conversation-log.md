@@ -1,7 +1,7 @@
 # 05 · 대화 로그 폴더 만들기
 
 - **날짜** 2026-09-03
-- **커밋** 이 커밋
+- **커밋** [`0463c58`](../../../commit/0463c58) Add claude-log/ with the conversation so far
 - **바뀐 파일** `claude-log/*` (신규 6파일), `README.md`
 
 ## 요청

@@ -1,39 +1,60 @@
 {
+  // 모두 VS Code 기본 기능만 씁니다. 확장을 하나도 안 깔아도 그대로 동작합니다.
+  // ($msCompile 문제 표시기도 VS Code 내장이라 컴파일 오류가 클릭 가능합니다.)
   "version": "2.0.0",
   "tasks": [
     {
-      // CMake Tools 가 현재 고른 프리셋으로 빌드한다. F5 가 이 작업을 먼저 부른다.
-      "label": "CMake: 빌드",
-      "type": "cmake",
-      "command": "build",
-      "targets": ["all"],
+      // Ctrl+Shift+B 로 실행되는 기본 빌드 작업
+      "label": "빌드 (Debug)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\build.bat",
+      "args": ["-Config", "Debug"],
+      "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": ["$msCompile"],
-      "detail": "선택된 프리셋으로 logcore.dll 과 logscope.exe 를 빌드합니다."
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "detail": "설치된 Visual Studio 를 찾아 구성하고 Debug 로 빌드합니다."
     },
     {
-      "label": "CMake: 구성",
-      "type": "cmake",
-      "command": "configure",
-      "problemMatcher": [],
-      "detail": "CMake 캐시를 다시 만듭니다. CMakeLists.txt 를 크게 바꾼 뒤에 씁니다."
-    },
-    {
-      "label": "테스트 실행",
-      "type": "cmake",
-      "command": "test",
-      "group": { "kind": "test", "isDefault": true },
-      "problemMatcher": [],
-      "detail": "ctest 로 logcore_test 를 돌립니다."
-    },
-    {
-      // CMake Tools 없이 터미널만으로 처음부터 빌드하고 싶을 때.
-      "label": "터미널: 구성 + 빌드 + 테스트 (vs2022)",
+      "label": "빌드 (Release)",
       "type": "shell",
-      "command": "cmake --preset vs2022 && cmake --build --preset vs2022-debug && ctest --preset vs2022-debug",
+      "command": "${workspaceFolder}\\build.bat",
+      "args": ["-Config", "Release"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": ["$msCompile"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "빌드 + 테스트",
+      "type": "shell",
+      "command": "${workspaceFolder}\\build.bat",
+      "args": ["-Config", "Debug", "-Test"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": ["$msCompile"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "detail": "빌드한 뒤 ctest 로 logcore_test 를 돌립니다."
+    },
+    {
+      "label": "정리 후 다시 빌드",
+      "type": "shell",
+      "command": "${workspaceFolder}\\build.bat",
+      "args": ["-Config", "Debug", "-Clean"],
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": ["$msCompile"],
-      "presentation": { "reveal": "always", "panel": "dedicated" }
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "detail": "빌드 폴더를 지우고 처음부터 구성·빌드합니다. CMakeLists.txt 를 크게 바꾼 뒤에 씁니다."
+    },
+    {
+      "label": "빌드 후 실행",
+      "type": "shell",
+      "command": "${workspaceFolder}\\build.bat",
+      "args": ["-Config", "Debug", "-Run"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$msCompile"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "detail": "디버거 없이 그냥 실행합니다. 확장이 없을 때 동작을 확인하는 용도."
     }
   ]
 }

@@ -15,7 +15,8 @@
 | [02](02-web-prototype.md) | 2026-09-02 | 엑셀 로그 그래프 뷰어 — 웹 프로토타입 | `71a83d4` |
 | [03](03-cpp-rewrite.md) | 2026-09-02 | C++ 재작성, DLL+EXE 구조 용어, 외부 라이브러리·보안 분석 | `eae6729` |
 | [04](04-vscode-build.md) | 2026-09-03 | VS Code 빌드 환경 (CMakePresets + .vscode) | `73829a4` |
-| [05](05-conversation-log.md) | 2026-09-03 | 이 로그 폴더 만들기 | (이 커밋) |
+| [05](05-conversation-log.md) | 2026-09-03 | 이 로그 폴더 만들기 | `0463c58` |
+| [06](06-vs2017-no-extensions.md) | 2026-09-03 | Visual Studio 2017 지원, VS Code 확장 없이 쓰기 | (이 커밋) |
 
 ## 규칙
 
