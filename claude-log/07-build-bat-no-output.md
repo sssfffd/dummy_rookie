@@ -1,7 +1,7 @@
 # 07 · `build.bat` 이 아무것도 출력하지 않는 문제
 
 - **날짜** 2026-09-03
-- **커밋** 이 커밋
+- **커밋** [`970b2d1`](../../../commit/970b2d1) Fix Windows script encoding and line endings
 - **바뀐 파일** `.gitattributes`(신규), `build.bat`, `scripts/build.ps1`, `scripts/diagnose.ps1`(신규), `.vscode/tasks.json`, `README.md`
 
 ## 요청

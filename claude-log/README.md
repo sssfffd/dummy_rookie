@@ -17,7 +17,8 @@
 | [04](04-vscode-build.md) | 2026-09-03 | VS Code 빌드 환경 (CMakePresets + .vscode) | `73829a4` |
 | [05](05-conversation-log.md) | 2026-09-03 | 이 로그 폴더 만들기 | `0463c58` |
 | [06](06-vs2017-no-extensions.md) | 2026-09-03 | Visual Studio 2017 지원, VS Code 확장 없이 쓰기 | `95ba55e` |
-| [07](07-build-bat-no-output.md) | 2026-09-03 | `build.bat` 이 아무것도 출력하지 않는 문제 | (이 커밋) |
+| [07](07-build-bat-no-output.md) | 2026-09-03 | `build.bat` 이 아무것도 출력하지 않는 문제 | `970b2d1` |
+| [08](08-reopen-same-file.md) | 2026-09-03 | 한 번 연 엑셀 파일을 다시 못 여는 문제 | (이 커밋) |
 
 ## 규칙
 

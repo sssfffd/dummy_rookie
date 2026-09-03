@@ -1367,7 +1367,13 @@ td.dim{color:var(--ink-3)}
 
   /* ============================ 파일 입출력 ============================ */
   $('btnOpen').addEventListener('click', function () { $('fileInput').click(); });
-  $('fileInput').addEventListener('change', function () { if (this.files && this.files[0]) readFile(this.files[0]); });
+  $('fileInput').addEventListener('change', function () {
+    if (this.files && this.files[0]) readFile(this.files[0]);
+    // 값을 비워야 같은 파일을 다시 고를 수 있다. 비우지 않으면 파일 이름이
+    // 그대로라 change 이벤트가 아예 발생하지 않아서, 두 번째부터는 파일을
+    // 골라도 아무 일도 일어나지 않는다.
+    this.value = '';
+  });
 
   function readFile(file) {
     var fr = new FileReader();
