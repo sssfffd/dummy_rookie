@@ -113,7 +113,7 @@ void TestBuildDataset() {
     lc::Grid g = MakeGrid();
     lc::Dataset ds;
     lc::Limits lim;
-    CHECK(lc::build_dataset(g, 0, lim, ds) == LC_OK);
+    CHECK(lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds) == LC_OK);
 
     CHECK(ds.times.size() == 4);
     CHECK(ds.time_kind == LC_TIME_NUMBER);
@@ -153,7 +153,7 @@ void TestOrientation() {
 
     lc::Dataset ds;
     lc::Limits lim;
-    CHECK(lc::build_dataset(g, 1, lim, ds) == LC_OK);
+    CHECK(lc::build_dataset(g, LC_ORIENT_COLS, lim, ds) == LC_OK);
     CHECK(ds.channels.size() == 2);
     CHECK(ds.channels[0].name == L"DI_00_START");
     CHECK(ds.channels[0].type == LC_CH_DIGITAL);
@@ -170,9 +170,9 @@ void TestTimeFallbacks() {
         g.push_back({Txt(L"CH"), Num(1), Num(2), Num(3)});
         lc::Dataset ds;
         lc::Limits lim;
-        CHECK(lc::build_dataset(g, 0, lim, ds) == LC_OK);
+        CHECK(lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds) == LC_OK);
         CHECK(ds.time_kind == LC_TIME_INDEX);
-        CHECK(ds.times[2] == 2.0);
+        CHECK(ds.times.size() == 3 && ds.times[2] == 2.0);
         CHECK(!ds.notes.empty());
     }
     {
@@ -182,7 +182,7 @@ void TestTimeFallbacks() {
         g.push_back({Txt(L"CH"), Num(1), Num(2), Num(3)});
         lc::Dataset ds;
         lc::Limits lim;
-        CHECK(lc::build_dataset(g, 0, lim, ds) == LC_OK);
+        CHECK(lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds) == LC_OK);
         CHECK(ds.time_kind == LC_TIME_INDEX);
     }
     {
@@ -192,9 +192,9 @@ void TestTimeFallbacks() {
         g.push_back({Txt(L"CH"), Num(0), Num(1)});
         lc::Dataset ds;
         lc::Limits lim;
-        CHECK(lc::build_dataset(g, 0, lim, ds) == LC_OK);
+        CHECK(lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds) == LC_OK);
         CHECK(ds.time_kind == LC_TIME_CLOCK_MS);
-        CHECK(std::fabs(ds.times[1] - 100.0) < 1e-9);
+        CHECK(ds.times.size() == 2 && std::fabs(ds.times[1] - 100.0) < 1e-9);
     }
 }
 
@@ -208,7 +208,7 @@ void TestLimitsAndEdges() {
         lc::Dataset ds;
         lc::Limits lim;
         lim.max_channels = 3;
-        CHECK(lc::build_dataset(g, 0, lim, ds) == LC_ERR_TOO_LARGE);
+        CHECK(lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds) == LC_ERR_TOO_LARGE);
     }
     {
         // 데이터 행이 없으면 성공했다고 하지 않는다.
@@ -216,7 +216,7 @@ void TestLimitsAndEdges() {
         g.push_back({Txt(L"Time"), Num(0), Num(1)});
         lc::Dataset ds;
         lc::Limits lim;
-        CHECK(lc::build_dataset(g, 0, lim, ds) == LC_ERR_NO_DATA);
+        CHECK(lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds) == LC_ERR_NO_DATA);
     }
     {
         // 이름 칸이 비면 자동으로 이름을 붙이고, 값이 전혀 없는 행은 건너뛴다.
@@ -226,9 +226,135 @@ void TestLimitsAndEdges() {
         g.push_back({Txt(L"EMPTY"), None(), None()});
         lc::Dataset ds;
         lc::Limits lim;
-        CHECK(lc::build_dataset(g, 0, lim, ds) == LC_OK);
+        CHECK(lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds) == LC_OK);
         CHECK(ds.channels.size() == 1);
         CHECK(ds.channels[0].name == L"IO_1");
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// 실제 로그 시트는 A1 부터 표가 시작하지 않는다. 아래는 그런 모양들.
+
+void TestColumnsAreChannels() {
+    std::printf("열이 IO 채널인 배치 (자동 판정)\n");
+    // 시간이 세로로 내려가고, IO 이름이 첫 행에 가로로 늘어선 흔한 모양.
+    lc::Grid g;
+    g.push_back({Txt(L"Time [s]"), Txt(L"DI_00_START"), Txt(L"AI_TEMP"), Txt(L"SEQ")});
+    g.push_back({Num(0.00), Num(0), Num(181.5), Txt(L"IDLE")});
+    g.push_back({Num(0.01), Num(1), Num(182.0), Txt(L"RUN")});
+    g.push_back({Num(0.02), Num(1), Num(182.5), Txt(L"RUN")});
+    g.push_back({Num(0.03), Num(0), Num(183.0), Txt(L"IDLE")});
+
+    lc::Dataset ds;
+    lc::Limits lim;
+    // LC_ORIENT_AUTO 로 열어도 스스로 알아내야 한다.
+    CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+    CHECK(ds.orientation == LC_ORIENT_COLS);
+    CHECK(ds.times.size() == 4);
+    CHECK(ds.time_unit == L"s");
+    CHECK(ds.channels.size() == 3);
+    CHECK(ds.channels[0].name == L"DI_00_START");
+    CHECK(ds.channels[0].type == LC_CH_DIGITAL);
+    CHECK(ds.channels[1].name == L"AI_TEMP");
+    CHECK(ds.channels[1].type == LC_CH_ANALOG);
+    CHECK(ds.channels[2].type == LC_CH_STATE);
+    CHECK(ds.first_row == 1 && ds.first_col == 1);
+}
+
+void TestPreambleThenTable() {
+    std::printf("시트 중간에서 시작하는 표\n");
+    // 앞에 장비 정보가 붙고, 표는 4행 B열부터 시작한다. 열이 IO 채널.
+    lc::Grid g;
+    g.push_back({Txt(L"장비"), Txt(L"주입기 #3")});
+    g.push_back({Txt(L"측정일"), Txt(L"2026-09-03")});
+    g.push_back({});
+    g.push_back({None(), Txt(L"Time [ms]"), Txt(L"DO_10_MOTOR"), Txt(L"AI_PRESS")});
+    g.push_back({None(), Num(0),   Num(0), Num(3.1)});
+    g.push_back({None(), Num(10),  Num(1), Num(42.0)});
+    g.push_back({None(), Num(20),  Num(1), Num(44.5)});
+    g.push_back({None(), Num(30),  Num(0), Num(3.4)});
+
+    lc::Dataset ds;
+    lc::Limits lim;
+    CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+    CHECK(ds.orientation == LC_ORIENT_COLS);
+    // 이름 행은 4행(1 기반), 표의 왼쪽 끝은 B열
+    CHECK(ds.first_row == 4);
+    CHECK(ds.first_col == 2);
+    CHECK(ds.channels.size() == 2);
+    CHECK(ds.channels[0].name == L"DO_10_MOTOR");
+    CHECK(ds.channels[1].name == L"AI_PRESS");
+    CHECK(ds.times.size() == 4);
+    CHECK(ds.times[3] == 30.0);
+    // 머리말을 건너뛰었다는 사실이 사용자에게 전달돼야 한다
+    CHECK(!ds.notes.empty());
+}
+
+void TestPreambleRowsOrientation() {
+    std::printf("시트 중간에서 시작하는 표 (행이 IO 채널)\n");
+    lc::Grid g;
+    g.push_back({Txt(L"# 설정 덤프")});
+    g.push_back({});
+    g.push_back({Txt(L"IO 이름"), Num(0.0), Num(0.1), Num(0.2), Num(0.3)});
+    g.push_back({Txt(L"DI_00"), Num(0), Num(1), Num(1), Num(0)});
+    g.push_back({Txt(L"AI_01"), Num(5.5), Num(6.5), Num(7.5), Num(8.5)});
+
+    lc::Dataset ds;
+    lc::Limits lim;
+    CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+    CHECK(ds.orientation == LC_ORIENT_ROWS);
+    CHECK(ds.first_row == 3);
+    CHECK(ds.first_col == 1);
+    CHECK(ds.channels.size() == 2);
+    CHECK(ds.channels[0].name == L"DI_00");
+    CHECK(ds.times.size() == 4);
+}
+
+void TestCounterDoesNotStealTimeAxis() {
+    std::printf("단조 증가하는 데이터가 시간축을 가로채지 않는다\n");
+    // CYCLE_COUNT 처럼 계속 늘어나는 채널이 있어도 헤더 행이 시간축이어야 한다.
+    lc::Grid g;
+    g.push_back({Txt(L"Time"), Num(0.0), Num(0.1), Num(0.2), Num(0.3), Num(0.4)});
+    g.push_back({Txt(L"DI_00"), Num(0), Num(1), Num(0), Num(1), Num(0)});
+    g.push_back({Txt(L"CYCLE_COUNT"), Num(1000), Num(1001), Num(1002), Num(1003), Num(1004)});
+
+    lc::Dataset ds;
+    lc::Limits lim;
+    CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+    CHECK(ds.orientation == LC_ORIENT_ROWS);
+    CHECK(ds.first_row == 1);
+    CHECK(ds.channels.size() == 2);
+    CHECK(ds.channels[0].name == L"DI_00");
+    CHECK(std::fabs(ds.times[4] - 0.4) < 1e-9);   // 시간축이 0.4 이지 1004 가 아니다
+}
+
+void TestExplicitOrientationOverridesAuto() {
+    std::printf("배치를 직접 지정하면 그대로 따른다\n");
+    // 자동이면 COLS 로 읽힐 표를, 사용자가 ROWS 라고 우기면 그대로 해 준다.
+    lc::Grid g;
+    g.push_back({Txt(L"Time"), Txt(L"CH_A"), Txt(L"CH_B")});
+    g.push_back({Num(0.0), Num(1), Num(10)});
+    g.push_back({Num(1.0), Num(2), Num(20)});
+    g.push_back({Num(2.0), Num(3), Num(30)});
+
+    // build_dataset 은 격자를 소비한다 (잘라내고 전치한다). 두 번 쓰려면 복사본을
+    // 따로 넘겨야 한다.
+    {
+        lc::Grid g1 = g;
+        lc::Dataset ds;
+        lc::Limits lim;
+        CHECK(lc::build_dataset(g1, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+        CHECK(ds.orientation == LC_ORIENT_COLS);
+        CHECK(ds.channels.size() == 2);
+    }
+    {
+        lc::Grid g2 = g;
+        lc::Dataset ds;
+        lc::Limits lim;
+        CHECK(lc::build_dataset(g2, LC_ORIENT_ROWS, lim, ds) == LC_OK);
+        CHECK(ds.orientation == LC_ORIENT_ROWS);
+        CHECK(ds.channels.size() == 3);   // 시간 행 아래 세 행이 채널이 된다
     }
 }
 
@@ -242,6 +368,11 @@ int main() {
     TestOrientation();
     TestTimeFallbacks();
     TestLimitsAndEdges();
+    TestColumnsAreChannels();
+    TestPreambleThenTable();
+    TestPreambleRowsOrientation();
+    TestCounterDoesNotStealTimeAxis();
+    TestExplicitOrientationOverridesAuto();
 
     std::printf("\n%d개 검사 중 %d개 실패\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

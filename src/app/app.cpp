@@ -603,8 +603,9 @@ void App::RebuildButtons(const Rects& r) {
     };
 
     add(ButtonId::Open, L"엑셀 파일 열기", true, false, S(14.0f));
-    add(ButtonId::OrientRows, L"행 = IO", false, orientation_ == 0, S(2.0f));
-    add(ButtonId::OrientCols, L"열 = IO", false, orientation_ == 1, S(14.0f));
+    add(ButtonId::OrientAuto, L"자동", false, orientation_ == LC_ORIENT_AUTO, S(2.0f));
+    add(ButtonId::OrientRows, L"행 = IO", false, orientation_ == LC_ORIENT_ROWS, S(2.0f));
+    add(ButtonId::OrientCols, L"열 = IO", false, orientation_ == LC_ORIENT_COLS, S(14.0f));
     add(ButtonId::Fit, L"전체 보기", false, false, S(2.0f));
     add(ButtonId::ClearCursors, L"커서 해제", false, false, S(14.0f));
 
@@ -1095,9 +1096,12 @@ void App::DrawStatus(const Rects& r) {
 void App::OnButton(ButtonId id) {
     switch (id) {
         case ButtonId::Open: OpenFileDialog(); break;
+        case ButtonId::OrientAuto:
         case ButtonId::OrientRows:
         case ButtonId::OrientCols: {
-            const uint32_t want = (id == ButtonId::OrientRows) ? 0u : 1u;
+            const uint32_t want = (id == ButtonId::OrientAuto)   ? LC_ORIENT_AUTO
+                                : (id == ButtonId::OrientRows)   ? LC_ORIENT_ROWS
+                                                                 : LC_ORIENT_COLS;
             if (orientation_ == want) break;
             orientation_ = want;
             if (!lastPath_.empty()) LoadPath(lastPath_);

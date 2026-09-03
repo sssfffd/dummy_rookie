@@ -1,7 +1,7 @@
 # 08 · 한 번 연 엑셀 파일을 다시 못 여는 문제
 
 - **날짜** 2026-09-03
-- **커밋** 이 커밋
+- **커밋** [`9b2fec0`](../../../commit/9b2fec0) Fix reopening a file in the web prototype
 - **바뀐 파일** `prototype/web/index.html`
 
 ## 요청

@@ -127,7 +127,7 @@ void LC_CALL lc_default_options(LcOpenOptions* opt) {
     if (!opt) return;
     const Limits d;
     opt->struct_size = sizeof(LcOpenOptions);
-    opt->orientation = 0;
+    opt->orientation = LC_ORIENT_AUTO;
     opt->max_channels = d.max_channels;
     opt->max_samples = d.max_samples;
     opt->max_cells = d.max_cells;
@@ -143,7 +143,7 @@ LcStatus LC_CALL lc_open_file(const wchar_t* path, const LcOpenOptions* opt, LcD
 
     const Limits lim = lc::limits_from(opt);
     const uint32_t orientation = opt ? opt->orientation : 0u;
-    if (orientation > 1) return LC_ERR_ARG;
+    if (orientation > LC_ORIENT_COLS) return LC_ERR_ARG;
 
     switch (format_from_path(path)) {
         case Format::Delimited: {
@@ -182,7 +182,7 @@ LcStatus LC_CALL lc_open_memory(const void* bytes, size_t size, const wchar_t* h
 
     const Limits lim = lc::limits_from(opt);
     const uint32_t orientation = opt ? opt->orientation : 0u;
-    if (orientation > 1) return LC_ERR_ARG;
+    if (orientation > LC_ORIENT_COLS) return LC_ERR_ARG;
     if (static_cast<uint64_t>(size) > lim.max_uncompressed_bytes) return LC_ERR_TOO_LARGE;
 
     const Format fmt = hint_name ? format_from_path(hint_name) : Format::Delimited;
@@ -229,6 +229,21 @@ const wchar_t* LC_CALL lc_status_text(LcStatus st) {
 const wchar_t* LC_CALL lc_notes(const LcDataset* ds) {
     const Dataset* d = cast(ds);
     return d ? d->notes.c_str() : L"";
+}
+
+LcOrientation LC_CALL lc_orientation(const LcDataset* ds) {
+    const Dataset* d = cast(ds);
+    return d ? d->orientation : LC_ORIENT_ROWS;
+}
+
+uint32_t LC_CALL lc_data_first_row(const LcDataset* ds) {
+    const Dataset* d = cast(ds);
+    return d ? d->first_row : 1u;
+}
+
+uint32_t LC_CALL lc_data_first_column(const LcDataset* ds) {
+    const Dataset* d = cast(ds);
+    return d ? d->first_col : 1u;
 }
 
 uint32_t LC_CALL lc_sample_count(const LcDataset* ds) {

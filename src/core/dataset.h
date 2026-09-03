@@ -50,6 +50,11 @@ struct Dataset {
     std::vector<Channel> channels;
     std::wstring notes;
 
+    // 실제로 사용한 배치와, 시트에서 표가 시작한 위치 (1 기반, 엑셀과 동일)
+    LcOrientation orientation = LC_ORIENT_ROWS;
+    uint32_t first_row = 1;
+    uint32_t first_col = 1;
+
     void add_note(const std::wstring& n) {
         if (!notes.empty()) notes += L" ";
         notes += n;

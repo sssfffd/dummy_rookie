@@ -33,7 +33,7 @@ private:
 };
 
 enum class ButtonId {
-    None, Open, OrientRows, OrientCols, Fit, ClearCursors,
+    None, Open, OrientAuto, OrientRows, OrientCols, Fit, ClearCursors,
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState
 };
 
@@ -141,7 +141,7 @@ private:
     std::wstring fileName_, message_;
     bool messageIsError_ = false;
     std::vector<bool> selected_;
-    uint32_t orientation_ = 0;
+    uint32_t orientation_ = LC_ORIENT_AUTO;
     std::wstring lastPath_;
 
     double t0_ = 0.0, t1_ = 1.0;

@@ -63,13 +63,34 @@ typedef enum LcTimeKind {
     LC_TIME_DATE_MS  = 3   /* 1970-01-01 UTC 기준 밀리초 */
 } LcTimeKind;
 
+/* ---- 표 배치 --------------------------------------------------------------
+ * 로그 시트는 두 가지 배치로 옵니다. 어느 쪽이든, 실제 표가 시트 맨 위·맨 왼쪽에서
+ * 시작한다는 보장은 없습니다. 장비 이름·측정 일시·설정값 같은 머리말이 앞에 붙어
+ * 표가 시트 중간부터 시작하는 경우가 흔합니다.
+ *
+ *   LC_ORIENT_ROWS                     LC_ORIENT_COLS
+ *   +--------+------+------+           +--------+--------+--------+
+ *   | 이름   | 0.00 | 0.01 |           | Time   | DI_00  | AI_T   |
+ *   | DI_00  |  0   |  1   |           | 0.00   |   0    | 182.4  |
+ *   | AI_T   |182.4 |182.6 |           | 0.01   |   1    | 182.6  |
+ *
+ * LC_ORIENT_AUTO 는 시간축으로 읽히는 가장 긴 구간을 찾아 배치와 시작 위치를
+ * 함께 정합니다. 찾은 결과는 lc_orientation() / lc_data_first_row() /
+ * lc_data_first_column() 으로 확인할 수 있고, lc_notes() 에도 남습니다.
+ */
+typedef enum LcOrientation {
+    LC_ORIENT_AUTO = 0,  /* 기본. 배치와 데이터 시작 위치를 자동으로 찾는다 */
+    LC_ORIENT_ROWS = 1,  /* 각 행이 IO 채널, 첫 행이 시간 */
+    LC_ORIENT_COLS = 2   /* 각 열이 IO 채널, 첫 열이 시간 */
+} LcOrientation;
+
 /* ---- 열기 옵션 ------------------------------------------------------------
  * 상한값은 신뢰할 수 없는 파일에 대한 방어선입니다. 0 을 넣으면 기본값을 씁니다.
  * 상한을 넘으면 파싱을 중단하고 LC_ERR_TOO_LARGE 를 돌려줍니다.
  */
 typedef struct LcOpenOptions {
     uint32_t struct_size;              /* sizeof(LcOpenOptions). 필수 */
-    uint32_t orientation;              /* 0 = 각 행이 채널(기본), 1 = 각 열이 채널 */
+    uint32_t orientation;              /* LcOrientation. 기본 LC_ORIENT_AUTO */
     uint32_t max_channels;             /* 기본 4096 */
     uint32_t max_samples;              /* 기본 1,048,576 */
     uint64_t max_cells;                /* 기본 32,000,000 */
@@ -103,6 +124,17 @@ LC_API const wchar_t* LC_CALL lc_status_text(LcStatus st);
 
 /* 파싱 중 남긴 경고(시간축 대체, 건너뛴 행 등). 없으면 빈 문자열. */
 LC_API const wchar_t* LC_CALL lc_notes(const LcDataset* ds);
+
+/* ---- 실제로 사용한 배치 ----------------------------------------------------
+ * LC_ORIENT_AUTO 로 열었을 때 무엇으로 판정했는지 돌려준다.
+ * LC_ORIENT_AUTO 를 돌려주는 일은 없다 (항상 ROWS 아니면 COLS).
+ */
+LC_API LcOrientation LC_CALL lc_orientation(const LcDataset* ds);
+
+/* 데이터 표가 시작한 위치. 엑셀과 같은 1 기반 번호이며, 이름이 있는 머리 행/열을
+ * 가리킨다. 머리말 없이 A1 부터 시작하는 시트라면 둘 다 1 이다. */
+LC_API uint32_t LC_CALL lc_data_first_row(const LcDataset* ds);
+LC_API uint32_t LC_CALL lc_data_first_column(const LcDataset* ds);
 
 /* ---- 시간축 -------------------------------------------------------------- */
 LC_API uint32_t     LC_CALL lc_sample_count(const LcDataset* ds);

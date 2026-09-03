@@ -28,7 +28,11 @@ long long days_from_civil(int y, unsigned m, unsigned d) {
     y -= m <= 2;
     const int era = (y >= 0 ? y : y - 399) / 400;
     const unsigned yoe = static_cast<unsigned>(y - era * 400);
-    const unsigned doy = (153u * (m + (m > 2 ? -3u : 9u)) + 2u) / 5u + d - 1u;
+    // 3월을 0으로 놓은 달 번호. 원 논문은 (m + (m > 2 ? -3 : 9)) 로 쓰지만,
+    // 부호 없는 값에 단항 빼기를 쓰면 MSVC 가 C4146 을 내고 /sdl 이 이를 오류로
+    // 올린다. 뺄셈을 밖으로 빼서 부호 없는 연산만 남긴다.
+    const unsigned mp = (m > 2) ? (m - 3u) : (m + 9u);
+    const unsigned doy = (153u * mp + 2u) / 5u + d - 1u;
     const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
     return static_cast<long long>(era) * 146097LL + static_cast<long long>(doe) - 719468LL;
 }

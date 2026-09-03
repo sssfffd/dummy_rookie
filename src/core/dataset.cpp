@@ -140,6 +140,243 @@ LcChannelType classify(const Row& row, size_t n, bool& any_value) {
     return LC_CH_STATE;
 }
 
+
+// ---------------------------------------------------------------------------
+// 데이터 블록 찾기
+//
+// 로그 시트는 A1 부터 표가 시작하지 않는 경우가 많다. 장비 이름, 측정 일시,
+// 설정값 같은 머리말이 앞에 붙고 실제 표는 시트 한참 아래·오른쪽에서 시작한다.
+// 게다가 배치가 두 가지다 — 행이 채널이거나, 열이 채널이거나.
+//
+// 두 가지를 한 번에 정한다. 시간축은 "값이 줄지 않고 이어지는 가장 긴 구간"
+// 이라는 성질이 있으므로, 모든 행과 모든 열에서 그런 구간을 찾아 가장 긴 쪽이
+// 시간축이라고 본다. 시간축이 행이면 행이 채널, 열이면 열이 채널이다. 구간이
+// 시작하는 위치가 곧 데이터가 시작하는 위치이고, 그 바로 앞이 이름 행/열이다.
+// ---------------------------------------------------------------------------
+
+// 후보로 훑어볼 앞쪽 행/열 수. 머리말이 이보다 길면 자동 판정을 포기한다.
+constexpr size_t kScanLead = 256;
+// 한 후보에서 시간축 구간을 얼마나 길게까지 세어 볼지. 어느 쪽이 더 긴지만
+// 알면 되므로 무한정 셀 필요가 없다.
+constexpr size_t kRunCap = 4096;
+// 이만큼은 이어져야 시간축으로 인정한다.
+constexpr uint32_t kMinRun = 3;
+
+// 셀 하나를 시간 값으로 읽어 본다. Bool 은 제외한다 — 0/1 이 늘어선 디지털
+// 채널을 시간축으로 오인하면 안 된다.
+bool cell_as_time(const Cell& c, double& out) {
+    switch (c.kind) {
+        case Cell::Kind::DateMs:
+        case Cell::Kind::Number:
+            out = c.num;
+            return true;
+        case Cell::Kind::Text:
+            return parse_clock_ms(c.text, out) || parse_iso_ms(c.text, out) ||
+                   parse_number(c.text, out);
+        default:
+            return false;
+    }
+}
+
+struct Run {
+    size_t start = 0;
+    uint32_t length = 0;
+};
+
+// 한 줄을 훑어 값이 줄지 않고 이어지는 가장 긴 시간 구간을 찾는다.
+// at(i) 는 i 번째 셀을 주거나, 없으면 nullptr 을 준다.
+template <class Fn>
+Run longest_time_run(size_t count, Fn at) {
+    Run best;
+    size_t run_start = 0;
+    uint32_t run_len = 0;
+    double prev = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+        const Cell* c = at(i);
+        double v = 0.0;
+        const bool ok = c && !c->empty() && cell_as_time(*c, v);
+        if (ok && run_len > 0 && v < prev) {
+            // 값이 줄었다. 시간축이 아니므로 여기서 끊고 이 자리에서 다시 센다.
+            if (run_len > best.length) { best.start = run_start; best.length = run_len; }
+            run_start = i;
+            run_len = 1;
+            prev = v;
+            continue;
+        }
+        if (!ok) {
+            if (run_len > best.length) { best.start = run_start; best.length = run_len; }
+            run_len = 0;
+            continue;
+        }
+        if (run_len == 0) run_start = i;
+        prev = v;
+        if (++run_len >= kRunCap) break;
+    }
+    if (run_len > best.length) { best.start = run_start; best.length = run_len; }
+    return best;
+}
+
+struct Candidate {
+    size_t line = 0;     // 후보가 된 행(또는 열) 번호
+    size_t start = 0;    // 시간축이 시작하는 열(또는 행) 번호
+    uint32_t length = 0;
+    bool valid() const { return length >= kMinRun; }
+};
+
+// 여러 후보 중 하나를 고른다. 가장 긴 것의 90% 이상이면서 가장 앞선 것을 쓴다.
+// 헤더 행 대신 뒤쪽의 단조 증가하는 데이터 행(예: 누적 카운터)이 뽑히는 것을
+// 막기 위한 규칙이다.
+Candidate pick(const std::vector<Candidate>& cands) {
+    uint32_t best = 0;
+    for (const Candidate& c : cands) best = (std::max)(best, c.length);
+    if (best < kMinRun) return Candidate();
+    const uint32_t floor_len = (std::max)(kMinRun, static_cast<uint32_t>(best * 9 / 10));
+    for (const Candidate& c : cands) {
+        if (c.length >= floor_len) return c;
+    }
+    return Candidate();
+}
+
+size_t grid_width(const Grid& g) {
+    size_t w = 0;
+    for (const Row& r : g) w = (std::max)(w, r.size());
+    return w;
+}
+
+struct Layout {
+    LcOrientation orientation = LC_ORIENT_ROWS;
+    size_t row0 = 0;   // 데이터 블록의 첫 행 (이름 행 또는 헤더 행)
+    size_t col0 = 0;   // 데이터 블록의 첫 열
+    bool detected = false;
+};
+
+// 시간축을 못 찾았을 때 쓰는 대비책. 채워진 칸이 갑자기 많아지는 첫 행을 표의
+// 시작으로 본다. 시간이 "T1", "T2" 같은 문자열이어도 머리말은 건너뛸 수 있다.
+Layout dense_block_fallback(const Grid& g) {
+    Layout lay;
+    size_t widest = 0;
+    for (const Row& r : g) {
+        size_t filled = 0;
+        for (const Cell& c : r) filled += c.empty() ? 0u : 1u;
+        widest = (std::max)(widest, filled);
+    }
+    if (widest < 2) return lay;
+
+    const size_t need = std::max<size_t>(2, widest / 2);
+    for (size_t r = 0; r < g.size(); ++r) {
+        size_t filled = 0;
+        for (const Cell& c : g[r]) filled += c.empty() ? 0u : 1u;
+        if (filled < need) continue;
+        lay.row0 = r;
+        // 이 행에서 처음 값이 있는 열을 표의 왼쪽 끝으로 본다.
+        for (size_t c = 0; c < g[r].size(); ++c) {
+            if (!g[r][c].empty()) { lay.col0 = c; break; }
+        }
+        return lay;
+    }
+    return lay;
+}
+
+Layout detect_layout(const Grid& g, uint32_t requested) {
+    Layout lay;
+    const size_t width = grid_width(g);
+    if (g.empty() || width < 2) return lay;
+
+    const size_t row_lim = (std::min)(g.size(), kScanLead);
+    const size_t col_lim = (std::min)(width, kScanLead);
+    const size_t depth = (std::min)(g.size(), kRunCap + kScanLead);
+
+    // 행 방향 후보: 각 행에서 가로로 이어지는 시간축
+    std::vector<Candidate> by_row;
+    for (size_t r = 0; r < row_lim; ++r) {
+        const Row& row = g[r];
+        const Run run = longest_time_run(row.size(), [&](size_t i) -> const Cell* {
+            return i < row.size() ? &row[i] : nullptr;
+        });
+        // 이름 열이 왼쪽에 한 칸은 있어야 한다. 0 열부터 시작하는 구간이면
+        // 한 칸 오른쪽으로 밀어서 본다.
+        Candidate c;
+        c.line = r;
+        c.start = (run.start == 0) ? 1 : run.start;
+        c.length = (run.start == 0) ? (run.length > 0 ? run.length - 1 : 0) : run.length;
+        // 이 행을 헤더로 삼으면 아래에 채널이 최소 하나는 남아야 한다. 이 조건이
+        // 없으면 마지막 행처럼 단조 증가하는 데이터 행이 헤더로 뽑혀서, 잘라낸
+        // 뒤에 채널이 하나도 안 남는다.
+        if (r + 1 >= g.size()) c.length = 0;
+        by_row.push_back(c);
+    }
+
+    // 열 방향 후보: 각 열에서 세로로 이어지는 시간축
+    std::vector<Candidate> by_col;
+    for (size_t cx = 0; cx < col_lim; ++cx) {
+        const Run run = longest_time_run(depth, [&](size_t i) -> const Cell* {
+            if (i >= g.size()) return nullptr;
+            const Row& row = g[i];
+            return cx < row.size() ? &row[cx] : nullptr;
+        });
+        Candidate c;
+        c.line = cx;
+        c.start = (run.start == 0) ? 1 : run.start;
+        c.length = (run.start == 0) ? (run.length > 0 ? run.length - 1 : 0) : run.length;
+        // 마찬가지로 이 열을 시간축으로 삼으면 오른쪽에 채널이 남아야 한다.
+        if (cx + 1 >= width) c.length = 0;
+        by_col.push_back(c);
+    }
+
+    const Candidate row_pick = pick(by_row);
+    const Candidate col_pick = pick(by_col);
+
+    LcOrientation choice = LC_ORIENT_AUTO;
+    if (requested == LC_ORIENT_ROWS) {
+        choice = row_pick.valid() ? LC_ORIENT_ROWS : LC_ORIENT_AUTO;
+    } else if (requested == LC_ORIENT_COLS) {
+        choice = col_pick.valid() ? LC_ORIENT_COLS : LC_ORIENT_AUTO;
+    } else if (row_pick.valid() || col_pick.valid()) {
+        // 더 긴 쪽이 시간축이다. 같으면 행 배치를 택한다.
+        choice = (col_pick.length > row_pick.length) ? LC_ORIENT_COLS : LC_ORIENT_ROWS;
+    }
+
+    if (choice == LC_ORIENT_ROWS) {
+        lay.orientation = LC_ORIENT_ROWS;
+        lay.row0 = row_pick.line;        // 헤더 행 (첫 칸은 이름 열 제목)
+        lay.col0 = row_pick.start - 1;   // 이름 열
+        lay.detected = true;
+    } else if (choice == LC_ORIENT_COLS) {
+        lay.orientation = LC_ORIENT_COLS;
+        lay.row0 = col_pick.start - 1;   // 이름 행 (IO 이름이 가로로 늘어선 행)
+        lay.col0 = col_pick.line;        // 시간 열
+        lay.detected = true;
+    } else {
+        lay = dense_block_fallback(g);
+        // 사용자가 배치를 지정했으면 그대로 따른다.
+        lay.orientation = (requested == LC_ORIENT_COLS) ? LC_ORIENT_COLS : LC_ORIENT_ROWS;
+    }
+    return lay;
+}
+
+// 블록 시작 위치 앞쪽을 잘라낸다.
+void crop(Grid& g, size_t row0, size_t col0) {
+    if (row0 > 0) g.erase(g.begin(), g.begin() + static_cast<std::ptrdiff_t>((std::min)(row0, g.size())));
+    if (col0 == 0) return;
+    for (Row& r : g) {
+        if (r.size() <= col0) { r.clear(); continue; }
+        r.erase(r.begin(), r.begin() + static_cast<std::ptrdiff_t>(col0));
+    }
+}
+
+// 0 기반 열 번호를 엑셀 열 이름으로. 2 -> "C"
+std::wstring column_label(size_t col) {
+    std::wstring out;
+    size_t n = col + 1;
+    while (n > 0) {
+        const size_t rem = (n - 1) % 26;
+        out.insert(out.begin(), static_cast<wchar_t>(L'A' + rem));
+        n = (n - 1) / 26;
+    }
+    return out;
+}
+
 }  // namespace
 
 Limits limits_from(const LcOpenOptions* opt) {
@@ -154,7 +391,31 @@ Limits limits_from(const LcOpenOptions* opt) {
 }
 
 LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Dataset& out) {
-    if (orientation == 1) transpose(grid);
+    if (orientation > LC_ORIENT_COLS) return LC_ERR_ARG;
+
+    // 시트 앞쪽 머리말을 건너뛰고 실제 표가 어디서 시작하는지, 그리고 행이
+    // 채널인지 열이 채널인지 정한다.
+    const Layout lay = detect_layout(grid, orientation);
+    out.orientation = lay.orientation;
+    out.first_row = static_cast<uint32_t>(lay.row0 + 1);
+    out.first_col = static_cast<uint32_t>(lay.col0 + 1);
+
+    crop(grid, lay.row0, lay.col0);
+    if (lay.orientation == LC_ORIENT_COLS) transpose(grid);
+
+    if (lay.row0 > 0 || lay.col0 > 0) {
+        out.add_note(L"데이터 표가 " + to_wstr(lay.row0 + 1) + L"행 " +
+                     column_label(lay.col0) + L"열에서 시작하는 것으로 보고 그 앞은 건너뛰었습니다.");
+    }
+    if (orientation == LC_ORIENT_AUTO) {
+        out.add_note(lay.orientation == LC_ORIENT_COLS
+                         ? L"각 열이 IO 채널인 배치로 읽었습니다."
+                         : L"각 행이 IO 채널인 배치로 읽었습니다.");
+        if (!lay.detected) {
+            out.add_note(L"시간축을 찾지 못해 배치를 확신할 수 없습니다. "
+                         L"결과가 이상하면 배치를 직접 지정해 보세요.");
+        }
+    }
 
     grid.erase(std::remove_if(grid.begin(), grid.end(),
                               [](const Row& r) { return !row_has_content(r); }),
