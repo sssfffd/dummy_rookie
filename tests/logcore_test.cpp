@@ -406,6 +406,103 @@ void TestMissingNamesAreReported() {
     CHECK(ds.notes.find(L"임시 이름") != std::wstring::npos);
 }
 
+
+void TestNameFolding() {
+    std::printf("이름 비교용 정규화\n");
+    CHECK(lc::fold_name(L"  DI_00  ") == L"di_00");
+    CHECK(lc::fold_name(L"AI TEMP") == lc::fold_name(L"ai   temp"));
+    CHECK(lc::fold_name(L"DI_00") != lc::fold_name(L"DI_01"));
+    CHECK(lc::fold_name(L"   ") == L"");
+}
+
+
+lc::Dataset MakeSmall(const wchar_t* n0, const wchar_t* n1) {
+    lc::Grid g;
+    g.push_back({Txt(L"Time [s]"), Num(0.0), Num(1.0), Num(2.0)});
+    g.push_back({Txt(n0), Num(0), Num(1), Num(1)});          // 디지털
+    g.push_back({Txt(n1), Num(10.0), Num(20.0), Num(30.0)}); // 아날로그
+    lc::Dataset ds;
+    lc::Limits lim;
+    lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds);
+    return ds;
+}
+
+void TestFindChannel() {
+    std::printf("이름으로 채널 찾기\n");
+    const lc::Dataset ds = MakeSmall(L"DI_00", L"AI_TEMP");
+    CHECK(lc::find_channel(ds, L"DI_00") == 0);
+    CHECK(lc::find_channel(ds, L"AI_TEMP") == 1);
+    // 공백과 대소문자는 무시한다. 같은 장비 로그라도 이 정도는 흔히 다르다.
+    CHECK(lc::find_channel(ds, L"  di_00 ") == 0);
+    CHECK(lc::find_channel(ds, L"DO_99") == -1);
+    CHECK(lc::find_channel(ds, L"") == -1);
+}
+
+void TestSampleAt() {
+    std::printf("임의 시각의 값 읽기 (시간축 정렬)\n");
+    const lc::Dataset ds = MakeSmall(L"DI_00", L"AI_TEMP");
+
+    // 아날로그는 선형 보간
+    CHECK(std::fabs(lc::sample_at(ds, 1, 0.0) - 10.0) < 1e-9);
+    CHECK(std::fabs(lc::sample_at(ds, 1, 0.5) - 15.0) < 1e-9);
+    CHECK(std::fabs(lc::sample_at(ds, 1, 1.5) - 25.0) < 1e-9);
+    CHECK(std::fabs(lc::sample_at(ds, 1, 2.0) - 30.0) < 1e-9);
+
+    // 디지털은 직전 값 유지. 0 과 1 사이를 보간해 0.5 를 만들면 안 된다.
+    CHECK(lc::sample_at(ds, 0, 0.0) == 0.0);
+    CHECK(lc::sample_at(ds, 0, 0.5) == 0.0);
+    CHECK(lc::sample_at(ds, 0, 0.99) == 0.0);
+    CHECK(lc::sample_at(ds, 0, 1.0) == 1.0);
+    CHECK(lc::sample_at(ds, 0, 1.5) == 1.0);
+
+    // 기록 구간 밖은 지어내지 않는다
+    CHECK(std::isnan(lc::sample_at(ds, 1, -0.1)));
+    CHECK(std::isnan(lc::sample_at(ds, 1, 2.1)));
+    CHECK(std::isnan(lc::sample_at(ds, 99, 1.0)));
+}
+
+void TestCompareTwoLogs() {
+    std::printf("이전/이후 로그 비교\n");
+    // 이후 로그는 표본 시각이 어긋나 있고(0.5 간격), 시간 원점도 다르다.
+    lc::Grid gb;
+    gb.push_back({Txt(L"Time [s]"), Num(100.0), Num(100.5), Num(101.0), Num(101.5), Num(102.0)});
+    gb.push_back({Txt(L"DI_00"), Num(0), Num(0), Num(1), Num(1), Num(1)});
+    gb.push_back({Txt(L"AI_TEMP"), Num(10.0), Num(15.0), Num(20.0), Num(26.0), Num(32.0)});
+    lc::Dataset b;
+    lc::Limits lim;
+    CHECK(lc::build_dataset(gb, LC_ORIENT_ROWS, lim, b) == LC_OK);
+
+    const lc::Dataset a = MakeSmall(L"DI_00", L"AI_TEMP");
+
+    // 각자의 시작점을 0 으로 놓고 맞춘다: a 의 t 는 b 의 t - a[0] + b[0]
+    const double a0 = a.times.front();
+    const double b0 = b.times.front();
+    auto at_b = [&](uint32_t ch, double t) { return lc::sample_at(b, ch, (t - a0) + b0); };
+
+    const int32_t bi_temp = lc::find_channel(b, L"AI_TEMP");
+    CHECK(bi_temp == 1);
+
+    // t=0, 1 은 두 로그가 같다. t=2 에서 30 -> 32 로 벌어진다.
+    CHECK(std::fabs(at_b(static_cast<uint32_t>(bi_temp), 0.0) - 10.0) < 1e-9);
+    CHECK(std::fabs(at_b(static_cast<uint32_t>(bi_temp), 1.0) - 20.0) < 1e-9);
+    CHECK(std::fabs(at_b(static_cast<uint32_t>(bi_temp), 2.0) - 32.0) < 1e-9);
+
+    // 차이를 세어 본다
+    uint32_t changed = 0;
+    for (double t : a.times) {
+        const double av = a.channels[1].values[static_cast<size_t>(t)];
+        const double bv = at_b(static_cast<uint32_t>(bi_temp), t);
+        if (std::fabs(bv - av) > 1e-9) ++changed;
+    }
+    CHECK(changed == 1);   // t=2 한 곳만
+
+    // 디지털은 계단이라 0.5 지점에서도 원래 값을 유지한다
+    const int32_t bi_di = lc::find_channel(b, L"DI_00");
+    CHECK(bi_di == 0);
+    CHECK(at_b(static_cast<uint32_t>(bi_di), 0.0) == 0.0);
+    CHECK(at_b(static_cast<uint32_t>(bi_di), 1.0) == 1.0);
+}
+
 }  // namespace
 
 int main() {
@@ -423,6 +520,10 @@ int main() {
     TestExplicitOrientationOverridesAuto();
     TestRealNamesSurviveDetection();
     TestMissingNamesAreReported();
+    TestNameFolding();
+    TestFindChannel();
+    TestSampleAt();
+    TestCompareTwoLogs();
 
     std::printf("\n%d개 검사 중 %d개 실패\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

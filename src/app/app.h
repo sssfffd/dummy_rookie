@@ -33,15 +33,23 @@ private:
 };
 
 enum class ButtonId {
-    None, Open, OrientAuto, OrientRows, OrientCols,
+    None, Open, OpenCompare, CloseCompare,
+    OrientAuto, OrientRows, OrientCols,
     ModeLanes, ModeOverlay, Normalize,
+    CompareBoth, CompareDiff,
     ZoomIn, ZoomOut, Fit, ClearCursors,
-    SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState
+    SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState,
+    FilterChanged
 };
 
 // 레인: 채널마다 한 줄, 각자 세로 눈금. 파형을 훑어볼 때.
 // 겹쳐보기: 가로축 시간, 세로축 값 하나를 여러 채널이 공유. 값을 비교할 때.
 enum class PlotMode { Lanes, Overlay };
+
+// 비교 로그를 열었을 때 무엇을 그릴지.
+//   Both — 이전과 이후를 겹쳐 그린다. 무엇이 어떻게 달라졌는지 눈으로 본다.
+//   Diff — 이후에서 이전을 뺀 값만 그린다. 달라진 구간만 도드라진다.
+enum class CompareMode { Both, Diff };
 
 // 겹쳐보기에서 한 번에 그릴 수 있는 채널 수. 범주형 색이 여덟 개까지만
 // 서로 구분되므로 그 이상은 색으로 구별이 안 된다.
@@ -61,8 +69,9 @@ struct Rects {
 
 class App {
 public:
-    // initialPath 가 있으면 창을 띄운 뒤 그 파일을 연다 (명령줄 인자).
-    bool Create(HINSTANCE inst, int show, const wchar_t* initialPath);
+    // 명령줄 인자. 첫 번째는 이전 로그, 두 번째가 있으면 비교할 이후 로그.
+    bool Create(HINSTANCE inst, int show, const wchar_t* initialPath,
+                const wchar_t* comparePath);
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
 private:
@@ -98,6 +107,10 @@ private:
     void DrawLaneDigital(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot);
     void DrawLaneAnalog(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot);
     void DrawLaneState(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot);
+    // 이전 로그의 시간 격자를 따라가며 이후 로그(또는 차이)를 그린다.
+    void DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
+                       double lo, double hi, const D2D1_COLOR_F& color, bool diff,
+                       float thickness);
     // 겹쳐보기용: 하나의 세로 눈금 위에 채널 하나를 그린다.
     void DrawSeries(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
                     double lo, double hi, const D2D1_COLOR_F& color);
@@ -113,6 +126,20 @@ private:
     void LoadPath(const std::wstring& path);
     void CloseDataset();
     void OpenFileDialog();
+    std::wstring PickLogFile(const wchar_t* title);
+
+    // ---- 두 로그 비교 ----
+    void OpenCompareDialog();
+    void LoadComparePath(const std::wstring& path);
+    void CloseCompare();
+    // 채널을 이름으로 맞추고, 채널마다 다른 샘플 수와 값 범위를 미리 구해 둔다.
+    void RebuildComparison();
+    bool HasCompare() const { return dsB_ != nullptr; }
+    // 이전 로그의 시각 t 에 대응하는 이후 로그의 값. 없으면 NaN.
+    double CompareValueAt(uint32_t ch, double t) const;
+    // 이후 - 이전. 상태 채널은 값이 다르면 1, 같으면 0.
+    double DiffValueAt(uint32_t ch, double t) const;
+    bool ChannelDiffers(uint32_t ch) const;
     void ResetViewToData();
     void ClampView(double a, double b);
     float ZoomAnchorX() const;
@@ -164,7 +191,15 @@ private:
     Ptr<ID2D1SolidColorBrush> brush_;
     Ptr<IDWriteTextFormat> fUi_, fUiCenter_, fMono_, fMonoRight_, fSmall_, fSmallRight_, fTitle_;
 
-    LcDataset* ds_ = nullptr;
+    LcDataset* ds_ = nullptr;          // 이전 로그 (비교하지 않을 때는 그냥 열린 로그)
+    LcDataset* dsB_ = nullptr;         // 이후 로그
+    std::wstring fileNameB_;
+    std::vector<int32_t> matchB_;      // 이전 채널 -> 이후 채널 (없으면 -1)
+    std::vector<uint32_t> diffCount_;  // 채널마다 값이 다른 샘플 수
+    std::vector<double> cmpLo_, cmpHi_;    // 이전·이후를 함께 담는 값 범위
+    std::vector<double> diffLo_, diffHi_;  // 차이 값의 범위
+    CompareMode compareMode_ = CompareMode::Both;
+    std::wstring compareSummary_;
     std::wstring fileName_, message_;
     bool messageIsError_ = false;
     std::vector<bool> selected_;
@@ -185,7 +220,7 @@ private:
     bool normalize_ = false;
 
     std::wstring query_;
-    int filter_ = -1;  // -1 = 전체, 아니면 LcChannelType
+    int filter_ = -1;  // -1 = 전체, -2 = 달라진 채널만, 아니면 LcChannelType
     std::vector<Button> buttons_;
     ButtonId hotButton_ = ButtonId::None;
 };

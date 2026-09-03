@@ -64,4 +64,13 @@ struct Dataset {
 // grid 를 소비해 out 을 채운다. orientation 1 이면 먼저 전치한다.
 LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Dataset& out);
 
+// ---- 두 로그 비교용 --------------------------------------------------------
+// 이름으로 채널 찾기. 정확히 일치하는 것을 먼저 보고, 없으면 공백·대소문자를
+// 무시하고 다시 찾는다. 못 찾으면 -1.
+int32_t find_channel(const Dataset& ds, const std::wstring& name);
+
+// 임의의 시각 t 에서의 값. 아날로그는 선형 보간, 디지털·상태는 직전 값 유지.
+// 기록 구간 밖이면 NaN — 없는 데이터를 지어내지 않는다.
+double sample_at(const Dataset& ds, uint32_t ch, double t);
+
 }  // namespace lc

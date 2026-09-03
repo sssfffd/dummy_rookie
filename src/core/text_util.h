@@ -27,6 +27,10 @@ bool parse_iso_ms(const std::wstring& s, double& out);
 // 엑셀 일련값(1899-12-30 기준) → 1970-01-01 UTC 기준 밀리초.
 double excel_serial_to_ms(double serial);
 
+// 이름 비교용으로 접는다. 앞뒤 공백을 떼고, 안쪽 연속 공백을 하나로 줄이고,
+// 대소문자를 없앤다. 같은 장비 로그라도 이런 차이는 흔하다.
+std::wstring fold_name(const std::wstring& s);
+
 // 라벨에서 단위를 뽑는다. "Time [s]" → "s", "t (ms)" → "ms". 없으면 빈 문자열.
 std::wstring unit_from_label(const std::wstring& label);
 

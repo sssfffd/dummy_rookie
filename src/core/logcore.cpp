@@ -18,6 +18,7 @@
 #include "com_ptr.h"
 #include "dataset.h"
 #include "readers.h"
+#include "text_util.h"
 
 namespace {
 
@@ -345,6 +346,18 @@ uint32_t LC_CALL lc_decimate(const LcDataset* ds, uint32_t ch, double t0, double
         if (!std::isfinite(out_max[c]) || v > out_max[c]) out_max[c] = v;
     }
     return columns;
+}
+
+int32_t LC_CALL lc_find_channel(const LcDataset* ds, const wchar_t* name) {
+    const Dataset* d = cast(ds);
+    if (!d || !name) return -1;
+    return lc::find_channel(*d, name);
+}
+
+double LC_CALL lc_sample_at(const LcDataset* ds, uint32_t ch, double t) {
+    const Dataset* d = cast(ds);
+    if (!d) return kNaN;
+    return lc::sample_at(*d, ch, t);
 }
 
 uint32_t LC_CALL lc_edge_count(const LcDataset* ds, uint32_t ch, double t0, double t1) {

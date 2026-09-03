@@ -1,7 +1,7 @@
 # 10 · 시간-값 그래프(겹쳐보기), IO 선택·확대, 엑셀 IO 이름 살리기
 
 - **날짜** 2026-09-03
-- **커밋** 이 커밋
+- **커밋** [`29dd513`](../../../commit/29dd513) Add an overlay plot, zoom controls, and keep real IO names
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `src/app/theme.h`, `src/core/dataset.cpp`, `tests/logcore_test.cpp`, `README.md`
 
 ## 요청

@@ -19,6 +19,30 @@ constexpr int kSearchCtrlId = 1001;
 const double kTimeSteps[] = {1, 2, 5, 10, 20, 50, 100, 200, 500, 1e3, 2e3, 5e3,
                              1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5, 9e5, 18e5, 36e5};
 
+// 선/도형 하나를 만드는 최소 도우미. D2D 는 폴리라인 API 가 없어서 경로를 만든다.
+struct Path {
+    Ptr<ID2D1PathGeometry> geo;
+    Ptr<ID2D1GeometrySink> sink;
+    bool figure = false;
+
+    bool Begin(ID2D1Factory* f) {
+        if (FAILED(f->CreatePathGeometry(geo.put()))) return false;
+        return SUCCEEDED(geo->Open(sink.put()));
+    }
+    void Move(float x, float y) {
+        if (figure) sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->BeginFigure(D2D1::Point2F(x, y), D2D1_FIGURE_BEGIN_HOLLOW);
+        figure = true;
+    }
+    void Line(float x, float y) {
+        if (figure) sink->AddLine(D2D1::Point2F(x, y));
+    }
+    bool End() {
+        if (figure) { sink->EndFigure(D2D1_FIGURE_END_OPEN); figure = false; }
+        return SUCCEEDED(sink->Close());
+    }
+};
+
 float Px(float v) { return std::floor(v) + 0.5f; }
 
 bool Inside(const D2D1_RECT_F& r, float x, float y) {
@@ -92,7 +116,8 @@ HMODULE LoadSystemLibrary(const wchar_t* name) {
 // 창 만들기 · 자원
 // ===========================================================================
 
-bool App::Create(HINSTANCE inst, int show, const wchar_t* initialPath) {
+bool App::Create(HINSTANCE inst, int show, const wchar_t* initialPath,
+                 const wchar_t* comparePath) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
@@ -142,6 +167,7 @@ bool App::Create(HINSTANCE inst, int show, const wchar_t* initialPath) {
     UpdateWindow(hwnd_);
 
     if (initialPath && *initialPath) LoadPath(initialPath);
+    if (comparePath && *comparePath) LoadComparePath(comparePath);
     return true;
 }
 
@@ -289,6 +315,7 @@ float App::TotalRailHeight() const {
 
 bool App::ChannelVisibleInList(uint32_t ch) const {
     if (!ds_) return false;
+    if (filter_ == -2 && !ChannelDiffers(ch)) return false;
     if (filter_ >= 0 && static_cast<int>(lc_channel_type(ds_, ch)) != filter_) return false;
     if (query_.empty()) return true;
     std::wstring name = lc_channel_name(ds_, ch);
@@ -304,6 +331,8 @@ bool App::ChannelVisibleInList(uint32_t ch) const {
 
 void App::CloseDataset() {
     if (ds_) { lc_close(ds_); ds_ = nullptr; }
+    matchB_.clear();
+    diffCount_.clear();
     selected_.clear();
     hasA_ = hasB_ = false;
     scrollPlot_ = scrollRail_ = 0.0f;
@@ -339,6 +368,9 @@ void App::LoadPath(const std::wstring& path) {
         for (uint32_t i = kInitial; i < n; ++i) selected_[i] = false;
     }
 
+    // 이전 로그가 바뀌었으므로 채널 매칭을 다시 맞춘다.
+    if (dsB_) RebuildComparison();
+
     message_ = lc_notes(ds_);
     if (n > kInitial) {
         if (!message_.empty()) message_ += L" ";
@@ -350,11 +382,11 @@ void App::LoadPath(const std::wstring& path) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void App::OpenFileDialog() {
+std::wstring App::PickLogFile(const wchar_t* title) {
     Ptr<IFileOpenDialog> dlg;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(dlg.put())))) {
-        return;
+        return std::wstring();
     }
     const COMDLG_FILTERSPEC filters[] = {
         {L"로그 파일 (*.xlsx;*.xlsm;*.csv;*.tsv;*.txt)", L"*.xlsx;*.xlsm;*.csv;*.tsv;*.txt"},
@@ -363,16 +395,207 @@ void App::OpenFileDialog() {
         {L"모든 파일 (*.*)", L"*.*"},
     };
     dlg->SetFileTypes(ARRAYSIZE(filters), filters);
-    dlg->SetTitle(L"로그 파일 열기");
-    if (FAILED(dlg->Show(hwnd_))) return;
+    dlg->SetTitle(title);
+    if (FAILED(dlg->Show(hwnd_))) return std::wstring();
 
     Ptr<IShellItem> item;
-    if (FAILED(dlg->GetResult(item.put()))) return;
-    PWSTR path = nullptr;
-    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
-        LoadPath(path);
-        CoTaskMemFree(path);
+    if (FAILED(dlg->GetResult(item.put()))) return std::wstring();
+    PWSTR raw = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw) return std::wstring();
+    std::wstring path = raw;
+    CoTaskMemFree(raw);
+    return path;
+}
+
+void App::OpenFileDialog() {
+    const std::wstring path = PickLogFile(L"로그 파일 열기 (이전 로그)");
+    if (!path.empty()) LoadPath(path);
+}
+
+
+// ===========================================================================
+// 두 로그 비교
+// ===========================================================================
+
+void App::CloseCompare() {
+    if (dsB_) { lc_close(dsB_); dsB_ = nullptr; }
+    fileNameB_.clear();
+    matchB_.clear();
+    diffCount_.clear();
+    cmpLo_.clear(); cmpHi_.clear();
+    diffLo_.clear(); diffHi_.clear();
+    compareSummary_.clear();
+    if (filter_ == -2) filter_ = -1;
+}
+
+void App::OpenCompareDialog() {
+    if (!ds_) {
+        message_ = L"먼저 이전 로그를 여세요. 그 다음에 비교할 이후 로그를 엽니다.";
+        messageIsError_ = true;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
     }
+    const std::wstring path = PickLogFile(L"비교할 이후 로그 열기");
+    if (!path.empty()) LoadComparePath(path);
+}
+
+void App::LoadComparePath(const std::wstring& path) {
+    LcOpenOptions opt{};
+    lc_default_options(&opt);
+    opt.orientation = orientation_;
+
+    LcDataset* ds = nullptr;
+    const LcStatus st = lc_open_file(path.c_str(), &opt, &ds);
+    if (st != LC_OK) {
+        message_ = std::wstring(L"이후 로그를 열지 못했습니다 — ") + lc_status_text(st);
+        messageIsError_ = true;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    CloseCompare();
+    dsB_ = ds;
+    const size_t slash = path.find_last_of(L"\\/");
+    fileNameB_ = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+    RebuildComparison();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+// 이후 로그를 이전 로그의 시각 t 에서 읽는다.
+//
+// 두 로그의 시간값이 같은 기준일 거라고 가정하지 않는다. 절대 시각으로 찍힌
+// 로그라면 측정한 날짜부터 다르다. 그래서 각자의 시작점을 0 으로 놓고, 시작
+// 이후 경과 시간으로 맞춘다.
+double App::CompareValueAt(uint32_t ch, double t) const {
+    if (!dsB_ || ch >= matchB_.size() || matchB_[ch] < 0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double* ta = lc_times(ds_);
+    const double* tb = lc_times(dsB_);
+    if (!ta || !tb) return std::numeric_limits<double>::quiet_NaN();
+    return lc_sample_at(dsB_, static_cast<uint32_t>(matchB_[ch]), (t - ta[0]) + tb[0]);
+}
+
+double App::DiffValueAt(uint32_t ch, double t) const {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const int idx = IndexAt(t);
+    if (idx < 0) return nan;
+    const double* av = lc_channel_values(ds_, ch);
+    if (!av) return nan;
+    const double a = av[idx];
+    const double b = CompareValueAt(ch, t);
+    if (!std::isfinite(a) || !std::isfinite(b)) return nan;
+
+    if (lc_channel_type(ds_, ch) == LC_CH_STATE) {
+        // 상태 값은 로그마다 번호가 다르게 매겨진다. 이름으로 비교해야 한다.
+        const std::wstring sa = lc_state_name(ds_, ch, static_cast<uint32_t>(a));
+        const std::wstring sb =
+            lc_state_name(dsB_, static_cast<uint32_t>(matchB_[ch]), static_cast<uint32_t>(b));
+        return (sa == sb) ? 0.0 : 1.0;
+    }
+    return b - a;
+}
+
+bool App::ChannelDiffers(uint32_t ch) const {
+    return ch < diffCount_.size() && diffCount_[ch] > 0;
+}
+
+void App::RebuildComparison() {
+    const uint32_t n = ds_ ? lc_channel_count(ds_) : 0u;
+    matchB_.assign(n, -1);
+    diffCount_.assign(n, 0u);
+    cmpLo_.assign(n, 0.0);
+    cmpHi_.assign(n, 1.0);
+    diffLo_.assign(n, 0.0);
+    diffHi_.assign(n, 1.0);
+    if (!dsB_ || n == 0) return;
+
+    const double* ta = lc_times(ds_);
+    const uint32_t samples = lc_sample_count(ds_);
+    uint32_t matched = 0, changed = 0;
+
+    for (uint32_t ch = 0; ch < n; ++ch) {
+        const int32_t b = lc_find_channel(dsB_, lc_channel_name(ds_, ch));
+        matchB_[ch] = b;
+        cmpLo_[ch] = lc_channel_min(ds_, ch);
+        cmpHi_[ch] = lc_channel_max(ds_, ch);
+        if (b < 0) continue;
+        ++matched;
+
+        // 아날로그는 값이 딱 떨어지지 않는다. 범위의 1/1000 을 넘게 벌어졌을
+        // 때만 "달라졌다"고 센다. 그러지 않으면 반올림 차이까지 전부 잡힌다.
+        const bool analog = lc_channel_type(ds_, ch) == LC_CH_ANALOG;
+        const double span = lc_channel_max(ds_, ch) - lc_channel_min(ds_, ch);
+        const double tol = analog ? (std::max)(std::fabs(span) * 1e-3, 1e-9) : 0.0;
+
+        double dlo = std::numeric_limits<double>::infinity();
+        double dhi = -std::numeric_limits<double>::infinity();
+        const double* av = lc_channel_values(ds_, ch);
+
+        for (uint32_t i = 0; i < samples; ++i) {
+            const double bv = CompareValueAt(ch, ta[i]);
+            if (std::isfinite(bv)) {
+                cmpLo_[ch] = (std::min)(cmpLo_[ch], bv);
+                cmpHi_[ch] = (std::max)(cmpHi_[ch], bv);
+            }
+            const double d = DiffValueAt(ch, ta[i]);
+            if (!std::isfinite(d)) continue;
+            dlo = (std::min)(dlo, d);
+            dhi = (std::max)(dhi, d);
+            if (std::fabs(d) > tol) ++diffCount_[ch];
+            (void)av;
+        }
+        if (std::isfinite(dlo) && std::isfinite(dhi)) {
+            if (dhi <= dlo) { dlo -= 0.5; dhi += 0.5; }
+            diffLo_[ch] = dlo;
+            diffHi_[ch] = dhi;
+        }
+        if (diffCount_[ch] > 0) ++changed;
+    }
+
+    compareSummary_ = Fmt(L"이후 로그 %s · 이름이 맞은 채널 %u/%u · 값이 달라진 채널 %u",
+                          fileNameB_.c_str(), matched, n, changed);
+    message_ = compareSummary_;
+    if (matched == 0) {
+        message_ = L"두 로그에서 이름이 같은 채널을 하나도 찾지 못했습니다. "
+                   L"같은 양식의 로그가 맞는지, 배치 설정이 같은지 확인하세요.";
+        messageIsError_ = true;
+    } else {
+        messageIsError_ = false;
+    }
+}
+
+void App::DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
+                        double lo, double hi, const D2D1_COLOR_F& color, bool diff,
+                        float thickness) {
+    if (!dsB_ || !(hi > lo)) return;
+    const double* t = lc_times(ds_);
+    if (!t) return;
+    int i0 = 0, i1 = 0;
+    IndexRange(i0, i1);
+    if (i0 < 0 || i1 < i0) return;
+
+    auto yOf = [&](double val) {
+        return bottom - static_cast<float>((val - lo) / (hi - lo)) * (bottom - top);
+    };
+    const bool step = lc_channel_type(ds_, ch) != LC_CH_ANALOG;
+
+    Path p;
+    if (!p.Begin(d2d_.get())) return;
+    bool pen = false;
+    float lastY = 0.0f;
+    for (int i = i0; i <= i1; ++i) {
+        const double v = diff ? DiffValueAt(ch, t[i]) : CompareValueAt(ch, t[i]);
+        if (!std::isfinite(v)) { pen = false; continue; }
+        const float x = XOfTime(t[i], plot);
+        const float y = yOf(v);
+        if (!pen) { p.Move(x, y); pen = true; }
+        else if (step) { p.Line(x, lastY); p.Line(x, y); }
+        else { p.Line(x, y); }
+        lastY = y;
+    }
+    if (!p.End()) return;
+    brush_->SetColor(color);
+    rt_->DrawGeometry(p.geo.get(), brush_.get(), thickness);
 }
 
 void App::ResetViewToData() {
@@ -529,30 +752,6 @@ std::wstring App::FormatValue(uint32_t ch, double v) const {
 namespace app {
 namespace {
 
-// 선/도형 하나를 만드는 최소 도우미. D2D 는 폴리라인 API 가 없어서 경로를 만든다.
-struct Path {
-    Ptr<ID2D1PathGeometry> geo;
-    Ptr<ID2D1GeometrySink> sink;
-    bool figure = false;
-
-    bool Begin(ID2D1Factory* f) {
-        if (FAILED(f->CreatePathGeometry(geo.put()))) return false;
-        return SUCCEEDED(geo->Open(sink.put()));
-    }
-    void Move(float x, float y) {
-        if (figure) sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        sink->BeginFigure(D2D1::Point2F(x, y), D2D1_FIGURE_BEGIN_HOLLOW);
-        figure = true;
-    }
-    void Line(float x, float y) {
-        if (figure) sink->AddLine(D2D1::Point2F(x, y));
-    }
-    bool End() {
-        if (figure) { sink->EndFigure(D2D1_FIGURE_END_OPEN); figure = false; }
-        return SUCCEEDED(sink->Close());
-    }
-};
-
 float MeasureText(IDWriteFactory* dw, const std::wstring& s, IDWriteTextFormat* f) {
     if (!dw || !f || s.empty()) return 0.0f;
     Ptr<IDWriteTextLayout> layout;
@@ -626,7 +825,9 @@ void App::RebuildButtons(const Rects& r) {
         buttons_.push_back(std::move(b));
     };
 
-    add(ButtonId::Open, L"엑셀 파일 열기", true, false, S(14.0f));
+    add(ButtonId::Open, L"이전 로그 열기", true, false, S(4.0f));
+    add(ButtonId::OpenCompare, L"이후 로그 열기", false, false, S(4.0f));
+    if (HasCompare()) add(ButtonId::CloseCompare, L"비교 해제", false, false, S(14.0f));
 
     // 아래 컨트롤 줄
     const float ctlH = S(24.0f);
@@ -644,6 +845,10 @@ void App::RebuildButtons(const Rects& r) {
     };
     addCtl(ButtonId::ModeLanes, L"레인", mode_ == PlotMode::Lanes, S(2.0f));
     addCtl(ButtonId::ModeOverlay, L"겹쳐보기", mode_ == PlotMode::Overlay, S(16.0f));
+    if (HasCompare()) {
+        addCtl(ButtonId::CompareBoth, L"이전+이후", compareMode_ == CompareMode::Both, S(2.0f));
+        addCtl(ButtonId::CompareDiff, L"차이 Δ", compareMode_ == CompareMode::Diff, S(16.0f));
+    }
     addCtl(ButtonId::OrientAuto, L"자동", orientation_ == LC_ORIENT_AUTO, S(2.0f));
     addCtl(ButtonId::OrientRows, L"행 = IO", orientation_ == LC_ORIENT_ROWS, S(2.0f));
     addCtl(ButtonId::OrientCols, L"열 = IO", orientation_ == LC_ORIENT_COLS, S(16.0f));
@@ -673,6 +878,7 @@ void App::RebuildButtons(const Rects& r) {
     addChip(ButtonId::FilterDigital, L"DIG", filter_ == LC_CH_DIGITAL);
     addChip(ButtonId::FilterAnalog, L"ANA", filter_ == LC_CH_ANALOG);
     addChip(ButtonId::FilterState, L"STATE", filter_ == LC_CH_STATE);
+    if (HasCompare()) addChip(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
 
     const float sy = ry + ch + S(6.0f);
     float sx = r.rail.left + pad;
@@ -825,14 +1031,28 @@ void App::DrawRail(const Rects& r) {
                   fMono_.get(), Rect(nameL, top, nameR, top + rowH),
                   on ? pal_.ink : pal_.ink3);
 
-        const wchar_t* tag = L"ANA";
-        switch (lc_channel_type(ds_, ch)) {
-            case LC_CH_DIGITAL: tag = L"DIG"; break;
-            case LC_CH_STATE:   tag = L"STATE"; break;
-            default: break;
+        // 비교 중이면 타입 대신 "달라진 샘플 수"를 보여 준다. 어느 IO 가 바뀌었는지가
+        // 두 로그를 견줄 때 가장 먼저 알고 싶은 것이다.
+        std::wstring tag;
+        D2D1_COLOR_F tagColor = pal_.ink3;
+        if (HasCompare()) {
+            if (ch >= matchB_.size() || matchB_[ch] < 0) {
+                tag = L"없음";
+            } else if (diffCount_[ch] == 0) {
+                tag = L"동일";
+            } else {
+                tag = Fmt(L"Δ%u", diffCount_[ch]);
+                tagColor = pal_.cursorB;
+            }
+        } else {
+            switch (lc_channel_type(ds_, ch)) {
+                case LC_CH_DIGITAL: tag = L"DIG"; break;
+                case LC_CH_STATE:   tag = L"STATE"; break;
+                default:            tag = L"ANA"; break;
+            }
         }
         DrawLabel(tag, fSmallRight_.get(),
-                  Rect(nameR, top, r.rail.right - S(12.0f), top + rowH), pal_.ink3);
+                  Rect(nameR, top, r.rail.right - S(12.0f), top + rowH), tagColor);
     }
     rt_->PopAxisAlignedClip();
 }
@@ -896,10 +1116,32 @@ void App::DrawLanesView(const Rects& r) {
 
         rt_->PushAxisAlignedClip(Rect(gutterX, lane.top, rightX, lane.bottom),
                                  D2D1_ANTIALIAS_MODE_ALIASED);
-        switch (type) {
-            case LC_CH_DIGITAL: DrawLaneDigital(ch, lane, r.plot); break;
-            case LC_CH_STATE:   DrawLaneState(ch, lane, r.plot); break;
-            default:            DrawLaneAnalog(ch, lane, r.plot); break;
+        const bool compare = HasCompare() && ch < matchB_.size() && matchB_[ch] >= 0;
+        const float pad = S(8.0f);
+        if (compare && compareMode_ == CompareMode::Diff) {
+            // 차이만 그린다. 0 선을 같이 그어야 어느 쪽으로 벌어졌는지 읽힌다.
+            const double dlo = diffLo_[ch], dhi = diffHi_[ch];
+            if (dhi > dlo && dlo <= 0.0 && dhi >= 0.0) {
+                const float zero = lane.bottom - pad -
+                                   static_cast<float>((0.0 - dlo) / (dhi - dlo)) *
+                                       (lane.bottom - pad - (lane.top + pad));
+                StrokeLine(gutterX, Px(zero), rightX, Px(zero), pal_.axis);
+            }
+            DrawResampled(ch, r.plot, lane.top + pad, lane.bottom - pad, dlo, dhi,
+                          pal_.accent, true, S(2.0f));
+        } else if (compare) {
+            // 두 로그를 같은 눈금에 겹친다. 눈금은 둘을 모두 담는 범위로.
+            const double lo = cmpLo_[ch], hi = cmpHi_[ch];
+            DrawSeries(ch, r.plot, lane.top + pad, lane.bottom - pad, lo, hi,
+                       pal_.accent);
+            DrawResampled(ch, r.plot, lane.top + pad, lane.bottom - pad, lo, hi,
+                          pal_.cursorB, false, S(1.6f));
+        } else {
+            switch (type) {
+                case LC_CH_DIGITAL: DrawLaneDigital(ch, lane, r.plot); break;
+                case LC_CH_STATE:   DrawLaneState(ch, lane, r.plot); break;
+                default:            DrawLaneAnalog(ch, lane, r.plot); break;
+            }
         }
         rt_->PopAxisAlignedClip();
 
@@ -919,16 +1161,37 @@ void App::DrawLanesView(const Rects& r) {
             vi = i1;
         }
         if (vals && vi >= 0) {
-            const D2D1_RECT_F vg = Rect(rightX + S(8.0f), lane.top, r.plot.right - S(10.0f),
-                                        type == LC_CH_ANALOG ? lane.top + h * 0.55f : lane.bottom);
-            DrawLabel(FormatValue(ch, vals[vi]), fMonoRight_.get(), vg, pal_.ink);
-            if (type == LC_CH_ANALOG) {
-                DrawLabel(FormatNumber(lc_channel_min(ds_, ch)) + L" – " +
-                              FormatNumber(lc_channel_max(ds_, ch)),
+            const double* times = lc_times(ds_);
+            if (compare) {
+                // 이전 / 이후 / 차이를 위아래로 쌓아 보여 준다.
+                const double tv = times ? times[vi] : 0.0;
+                DrawLabel(FormatValue(ch, vals[vi]), fSmallRight_.get(),
+                          Rect(rightX + S(4.0f), lane.top + S(2.0f), r.plot.right - S(10.0f),
+                               lane.top + h * 0.36f),
+                          pal_.accent);
+                DrawLabel(FormatValue(ch, CompareValueAt(ch, tv)), fSmallRight_.get(),
+                          Rect(rightX + S(4.0f), lane.top + h * 0.34f, r.plot.right - S(10.0f),
+                               lane.top + h * 0.68f),
+                          pal_.cursorB);
+                const double d = DiffValueAt(ch, tv);
+                DrawLabel(std::isfinite(d) ? (L"Δ " + FormatNumber(d)) : L"Δ —",
                           fSmallRight_.get(),
-                          Rect(rightX + S(4.0f), lane.top + h * 0.52f,
-                               r.plot.right - S(10.0f), lane.bottom),
-                          pal_.ink3);
+                          Rect(rightX + S(4.0f), lane.top + h * 0.66f, r.plot.right - S(10.0f),
+                               lane.bottom - S(2.0f)),
+                          pal_.ink2);
+            } else {
+                const D2D1_RECT_F vg =
+                    Rect(rightX + S(8.0f), lane.top, r.plot.right - S(10.0f),
+                         type == LC_CH_ANALOG ? lane.top + h * 0.55f : lane.bottom);
+                DrawLabel(FormatValue(ch, vals[vi]), fMonoRight_.get(), vg, pal_.ink);
+                if (type == LC_CH_ANALOG) {
+                    DrawLabel(FormatNumber(lc_channel_min(ds_, ch)) + L" – " +
+                                  FormatNumber(lc_channel_max(ds_, ch)),
+                              fSmallRight_.get(),
+                              Rect(rightX + S(4.0f), lane.top + h * 0.52f,
+                                   r.plot.right - S(10.0f), lane.bottom),
+                              pal_.ink3);
+                }
             }
         }
     }
@@ -1120,7 +1383,11 @@ double App::SeriesValue(uint32_t ch, double raw) const {
 }
 
 void App::OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& hi) const {
-    if (normalize_) { lo = 0.0; hi = 1.0; return; }
+    if (normalize_ && !(HasCompare() && compareMode_ == CompareMode::Diff)) {
+        lo = 0.0;
+        hi = 1.0;
+        return;
+    }
     lo = std::numeric_limits<double>::infinity();
     hi = -std::numeric_limits<double>::infinity();
 
@@ -1131,13 +1398,30 @@ void App::OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& h
     const double* t = lc_times(ds_);
     if (!t || i0 < 0 || i1 < i0) { lo = 0.0; hi = 1.0; return; }
 
+    const bool diff = HasCompare() && compareMode_ == CompareMode::Diff;
     for (uint32_t ch : shown) {
         const double* v = lc_channel_values(ds_, ch);
         if (!v) continue;
         for (int i = i0; i <= i1; ++i) {
-            if (!std::isfinite(v[i])) continue;
-            lo = (std::min)(lo, v[i]);
-            hi = (std::max)(hi, v[i]);
+            if (diff) {
+                const double d = DiffValueAt(ch, t[i]);
+                if (!std::isfinite(d)) continue;
+                lo = (std::min)(lo, d);
+                hi = (std::max)(hi, d);
+                continue;
+            }
+            if (std::isfinite(v[i])) {
+                lo = (std::min)(lo, v[i]);
+                hi = (std::max)(hi, v[i]);
+            }
+            // 비교 중이면 이후 로그의 값도 눈금에 들어와야 한다.
+            if (HasCompare()) {
+                const double b = CompareValueAt(ch, t[i]);
+                if (std::isfinite(b)) {
+                    lo = (std::min)(lo, b);
+                    hi = (std::max)(hi, b);
+                }
+            }
         }
     }
     if (!std::isfinite(lo) || !std::isfinite(hi)) { lo = 0.0; hi = 1.0; return; }
@@ -1229,8 +1513,16 @@ void App::DrawOverlayReadout(const Rects& r, const std::vector<uint32_t>& shown,
         Fill(dot, col);
         DrawLabel(lc_channel_name(ds_, ch), fMono_.get(),
                   Rect(dot.right + S(7.0f), y, box.right - S(70.0f), y + lineH), pal_.ink2);
-        DrawLabel(FormatValue(ch, value_at(ch)), fMonoRight_.get(),
-                  Rect(box.right - S(72.0f), y, box.right - S(9.0f), y + lineH), pal_.ink);
+        if (HasCompare()) {
+            const double tv = lc_times(ds_)[idx];
+            const double d = DiffValueAt(ch, tv);
+            DrawLabel(std::isfinite(d) ? (L"Δ " + FormatNumber(d)) : L"Δ —", fMonoRight_.get(),
+                      Rect(box.right - S(72.0f), y, box.right - S(9.0f), y + lineH),
+                      std::isfinite(d) && d != 0.0 ? pal_.cursorB : pal_.ink3);
+        } else {
+            DrawLabel(FormatValue(ch, value_at(ch)), fMonoRight_.get(),
+                      Rect(box.right - S(72.0f), y, box.right - S(9.0f), y + lineH), pal_.ink);
+        }
         y += lineH;
     }
 }
@@ -1284,7 +1576,24 @@ void App::DrawOverlayView(const Rects& r) {
 
     // 파형
     rt_->PushAxisAlignedClip(Rect(gutterX, top, rightX, bottom), D2D1_ANTIALIAS_MODE_ALIASED);
-    for (uint32_t ch : shown) DrawSeries(ch, r.plot, top, bottom, lo, hi, pal_.series[ch % 8]);
+    const bool cmpDiff = HasCompare() && compareMode_ == CompareMode::Diff;
+    for (uint32_t ch : shown) {
+        const D2D1_COLOR_F col = pal_.series[ch % 8];
+        if (cmpDiff) {
+            DrawResampled(ch, r.plot, top, bottom, lo, hi, col, true, S(2.0f));
+            continue;
+        }
+        DrawSeries(ch, r.plot, top, bottom, lo, hi, col);
+        if (HasCompare()) {
+            // 같은 색을 옅고 얇게 그린다. 색은 채널을 뜻하고, 굵기가 이전/이후를 뜻한다.
+            const D2D1_COLOR_F faded = D2D1::ColorF(col.r, col.g, col.b, 0.5f);
+            DrawResampled(ch, r.plot, top, bottom, lo, hi, faded, false, S(1.4f));
+        }
+    }
+    if (cmpDiff && lo <= 0.0 && hi >= 0.0) {
+        const float zero = bottom - static_cast<float>((0.0 - lo) / (hi - lo)) * (bottom - top);
+        StrokeLine(gutterX, Px(zero), rightX, Px(zero), pal_.axis);
+    }
     rt_->PopAxisAlignedClip();
 
     // 범례
@@ -1301,6 +1610,14 @@ void App::DrawOverlayView(const Rects& r) {
                        r.plot.top + legendH),
                   pal_.ink2);
         lx = swatch.right + S(6.0f) + w + S(18.0f);
+    }
+
+    if (HasCompare()) {
+        DrawLabel(compareMode_ == CompareMode::Diff
+                      ? L"이후 − 이전"
+                      : L"진한 선 = 이전 · 옅은 선 = 이후",
+                  fSmall_.get(),
+                  Rect(lx, r.plot.top, lx + S(220.0f), r.plot.top + legendH), pal_.ink3);
     }
 
     uint32_t selected = 0;
@@ -1398,6 +1715,14 @@ void App::DrawStatus(const Rects& r) {
 void App::OnButton(ButtonId id) {
     switch (id) {
         case ButtonId::Open: OpenFileDialog(); break;
+        case ButtonId::OpenCompare: OpenCompareDialog(); break;
+        case ButtonId::CloseCompare:
+            CloseCompare();
+            message_ = ds_ ? lc_notes(ds_) : L"";
+            messageIsError_ = false;
+            break;
+        case ButtonId::CompareBoth: compareMode_ = CompareMode::Both; break;
+        case ButtonId::CompareDiff: compareMode_ = CompareMode::Diff; break;
         case ButtonId::OrientAuto:
         case ButtonId::OrientRows:
         case ButtonId::OrientCols: {
@@ -1435,6 +1760,7 @@ void App::OnButton(ButtonId id) {
         case ButtonId::FilterDigital: filter_ = LC_CH_DIGITAL; scrollRail_ = 0.0f; break;
         case ButtonId::FilterAnalog:  filter_ = LC_CH_ANALOG; scrollRail_ = 0.0f; break;
         case ButtonId::FilterState:   filter_ = LC_CH_STATE; scrollRail_ = 0.0f; break;
+        case ButtonId::FilterChanged: filter_ = -2; scrollRail_ = 0.0f; break;
         default: break;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1650,9 +1976,19 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_DROPFILES: {
             HDROP drop = reinterpret_cast<HDROP>(wp);
-            wchar_t path[MAX_PATH] = {0};
-            if (DragQueryFileW(drop, 0, path, MAX_PATH)) LoadPath(path);
+            // 두 개를 한 번에 떨어뜨리면 첫 번째가 이전 로그, 두 번째가 이후 로그.
+            const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+            wchar_t first[MAX_PATH] = {0};
+            wchar_t second[MAX_PATH] = {0};
+            const bool got1 = count > 0 && DragQueryFileW(drop, 0, first, MAX_PATH) > 0;
+            const bool got2 = count > 1 && DragQueryFileW(drop, 1, second, MAX_PATH) > 0;
             DragFinish(drop);
+            if (got1) {
+                // 이미 이전 로그가 있고 한 개만 떨어뜨렸으면 비교용으로 받는다.
+                if (!got2 && ds_ != nullptr) LoadComparePath(first);
+                else LoadPath(first);
+            }
+            if (got2) LoadComparePath(second);
             SetForegroundWindow(hwnd_);
             return 0;
         }
@@ -1676,6 +2012,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_DESTROY:
+            CloseCompare();
             CloseDataset();
             DiscardDeviceResources();
             if (searchFont_) { DeleteObject(searchFont_); searchFont_ = nullptr; }

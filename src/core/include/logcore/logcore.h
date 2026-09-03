@@ -159,6 +159,22 @@ LC_API const double* LC_CALL lc_channel_values(const LcDataset* ds, uint32_t ch)
 LC_API uint32_t      LC_CALL lc_state_count(const LcDataset* ds, uint32_t ch);
 LC_API const wchar_t* LC_CALL lc_state_name(const LcDataset* ds, uint32_t ch, uint32_t state);
 
+/* ---- 두 로그 비교 ----------------------------------------------------------
+ * 같은 양식으로 뽑은 로그 두 개(이전/이후)를 견주려면 두 가지가 필요합니다.
+ * 채널을 이름으로 맞추는 것과, 서로 다른 시간 격자를 맞추는 것입니다.
+ */
+
+/* 이름으로 채널을 찾는다. 정확히 같은 이름을 먼저 보고, 없으면 앞뒤 공백과
+ * 대소문자를 무시하고 다시 찾는다. 못 찾으면 -1. */
+LC_API int32_t LC_CALL lc_find_channel(const LcDataset* ds, const wchar_t* name);
+
+/* 임의의 시각 t 에서의 값. 두 로그의 시간 격자가 달라도 한쪽 격자에 맞춰
+ * 값을 읽어 올 수 있다.
+ *   아날로그  : 앞뒤 샘플을 선형 보간
+ *   디지털/상태: 직전 샘플 값을 유지 (계단). 없는 중간 값을 만들지 않는다.
+ * t 가 기록 구간 밖이거나 근처 샘플이 비어 있으면 NaN. */
+LC_API double LC_CALL lc_sample_at(const LcDataset* ds, uint32_t ch, double t);
+
 /* ---- 그리기 보조 ---------------------------------------------------------
  * [t0,t1] 구간을 columns 개의 픽셀 열로 접어 열마다 최소/최대를 뽑는다.
  * 샘플이 픽셀보다 촘촘할 때 렌더러가 한 픽셀에 수천 번 선을 긋지 않게 한다.

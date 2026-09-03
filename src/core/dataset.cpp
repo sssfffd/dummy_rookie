@@ -442,6 +442,44 @@ Limits limits_from(const LcOpenOptions* opt) {
     return lim;
 }
 
+
+int32_t find_channel(const Dataset& ds, const std::wstring& name) {
+    for (size_t i = 0; i < ds.channels.size(); ++i) {
+        if (ds.channels[i].name == name) return static_cast<int32_t>(i);
+    }
+    const std::wstring want = fold_name(name);
+    if (want.empty()) return -1;
+    for (size_t i = 0; i < ds.channels.size(); ++i) {
+        if (fold_name(ds.channels[i].name) == want) return static_cast<int32_t>(i);
+    }
+    return -1;
+}
+
+double sample_at(const Dataset& ds, uint32_t ch, double t) {
+    if (ch >= ds.channels.size() || !std::isfinite(t)) return kNaN;
+    const std::vector<double>& T = ds.times;
+    const std::vector<double>& V = ds.channels[ch].values;
+    if (T.empty() || V.size() != T.size()) return kNaN;
+    if (t < T.front() || t > T.back()) return kNaN;
+
+    // t 이하인 마지막 샘플. t 가 샘플 시각과 정확히 같으면 그 샘플이어야 한다
+    // (lower_bound 를 쓰면 전환이 일어난 바로 그 순간에 직전 값을 돌려준다).
+    const size_t i =
+        static_cast<size_t>(std::upper_bound(T.begin(), T.end(), t) - T.begin()) - 1;
+
+    const double v0 = V[i];
+    // 디지털과 상태는 계단이다. 보간하면 없던 중간 값이 생긴다.
+    if (ds.channels[ch].type != LC_CH_ANALOG) return v0;
+    if (i + 1 >= T.size()) return v0;
+    if (!std::isfinite(v0)) return kNaN;
+
+    const double v1 = V[i + 1];
+    if (!std::isfinite(v1)) return v0;
+    const double dt = T[i + 1] - T[i];
+    if (!(dt > 0.0)) return v0;
+    return v0 + (v1 - v0) * (t - T[i]) / dt;
+}
+
 LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Dataset& out) {
     if (orientation > LC_ORIENT_COLS) return LC_ERR_ARG;
 

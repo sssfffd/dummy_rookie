@@ -3,6 +3,7 @@
 
 #include <windows.h>
 #include <objbase.h>
+#include <shellapi.h>
 
 #include "app.h"
 
@@ -48,16 +49,30 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int show) {
         return 1;
     }
 
-    // 명령줄에 파일 경로 하나를 주면 그 파일로 시작한다. 따옴표는 벗긴다.
-    std::wstring initial = cmdLine ? cmdLine : L"";
-    if (initial.size() >= 2 && initial.front() == L'"' && initial.back() == L'"') {
-        initial = initial.substr(1, initial.size() - 2);
+    // 명령줄 인자. 하나면 그 로그를, 둘이면 이전/이후 로그로 열어 비교한다.
+    //   logscope.exe before.xlsx after.xlsx
+    std::wstring initial, compare;
+    {
+        // CommandLineToArgvW 는 빈 문자열을 받으면 인자 대신 실행 파일 경로를
+        // 돌려준다. 그대로 쓰면 인자 없이 실행했을 때 자기 자신을 로그로 열려고
+        // 한다. 비어 있으면 아예 부르지 않는다.
+        const std::wstring raw = cmdLine ? cmdLine : L"";
+        const bool has_arg = raw.find_first_not_of(L" \t") != std::wstring::npos;
+        if (has_arg) {
+            int argc = 0;
+            LPWSTR* argv = CommandLineToArgvW(raw.c_str(), &argc);
+            if (argv) {
+                if (argc > 0 && argv[0]) initial = argv[0];
+                if (argc > 1 && argv[1]) compare = argv[1];
+                LocalFree(argv);
+            }
+        }
     }
 
     int exit_code = 0;
     {
         app::App application;
-        if (!application.Create(inst, show, initial.c_str())) {
+        if (!application.Create(inst, show, initial.c_str(), compare.c_str())) {
             MessageBoxW(nullptr, L"창을 만들지 못했습니다.", L"IO Log Scope", MB_ICONERROR);
             CoUninitialize();
             return 1;

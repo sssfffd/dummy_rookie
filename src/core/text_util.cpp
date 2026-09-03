@@ -162,6 +162,25 @@ double excel_serial_to_ms(double serial) {
     return (days - 25569.0) * 86400000.0;
 }
 
+std::wstring fold_name(const std::wstring& s) {
+    const std::wstring t = trim(s);
+    std::wstring out;
+    out.reserve(t.size());
+    bool prev_space = false;
+    for (wchar_t c : t) {
+        const bool space = is_space(c);
+        if (space) {
+            if (!prev_space && !out.empty()) out.push_back(L' ');
+            prev_space = true;
+            continue;
+        }
+        prev_space = false;
+        out.push_back(static_cast<wchar_t>(std::towlower(c)));
+    }
+    while (!out.empty() && out.back() == L' ') out.pop_back();
+    return out;
+}
+
 std::wstring unit_from_label(const std::wstring& label) {
     const std::wstring s = trim(label);
     if (s.empty() || s.size() > 128) return L"";
