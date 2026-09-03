@@ -1,0 +1,51 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // F5. CMake 패널에서 고른 프리셋/구성의 산출물을 그대로 띄운다.
+      // 디버그 빌드를 골랐으면 디버그 바이너리가 실행된다.
+      "name": "logscope 실행",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "args": [],
+      "cwd": "${command:cmake.getLaunchTargetDirectory}",
+      "stopAtEntry": false,
+      "console": "internalConsole",
+      "preLaunchTask": "CMake: 빌드"
+    },
+    {
+      // 같은 실행이지만 로그 파일 경로를 인자로 넘긴다. 파일 대화상자를 거치지
+      // 않으므로 파서를 반복해서 디버깅할 때 편하다.
+      "name": "logscope 실행 (파일 지정)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "args": ["${input:logPath}"],
+      "cwd": "${command:cmake.getLaunchTargetDirectory}",
+      "stopAtEntry": false,
+      "console": "internalConsole",
+      "preLaunchTask": "CMake: 빌드"
+    },
+    {
+      // 코어 로직 테스트를 콘솔에서 디버깅한다.
+      "name": "logcore_test 디버그",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${command:cmake.buildDirectory}/bin/${command:cmake.buildType}/logcore_test.exe",
+      "args": [],
+      "cwd": "${command:cmake.buildDirectory}",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "preLaunchTask": "CMake: 빌드"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "logPath",
+      "type": "promptString",
+      "description": "열 로그 파일의 전체 경로 (.xlsx 또는 .csv)",
+      "default": ""
+    }
+  ]
+}

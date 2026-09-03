@@ -1,0 +1,7 @@
+{
+  // VS Code 가 이 폴더를 열면 설치를 권합니다.
+  "recommendations": [
+    "ms-vscode.cpptools",      // C/C++ 언어 지원과 디버거
+    "ms-vscode.cmake-tools"    // CMake 구성 · 빌드 · 테스트 통합
+  ]
+}

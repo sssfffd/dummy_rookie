@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // CMake Tools 가 현재 고른 프리셋으로 빌드한다. F5 가 이 작업을 먼저 부른다.
+      "label": "CMake: 빌드",
+      "type": "cmake",
+      "command": "build",
+      "targets": ["all"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$msCompile"],
+      "detail": "선택된 프리셋으로 logcore.dll 과 logscope.exe 를 빌드합니다."
+    },
+    {
+      "label": "CMake: 구성",
+      "type": "cmake",
+      "command": "configure",
+      "problemMatcher": [],
+      "detail": "CMake 캐시를 다시 만듭니다. CMakeLists.txt 를 크게 바꾼 뒤에 씁니다."
+    },
+    {
+      "label": "테스트 실행",
+      "type": "cmake",
+      "command": "test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": [],
+      "detail": "ctest 로 logcore_test 를 돌립니다."
+    },
+    {
+      // CMake Tools 없이 터미널만으로 처음부터 빌드하고 싶을 때.
+      "label": "터미널: 구성 + 빌드 + 테스트 (vs2022)",
+      "type": "shell",
+      "command": "cmake --preset vs2022 && cmake --build --preset vs2022-debug && ctest --preset vs2022-debug",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$msCompile"],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    }
+  ]
+}

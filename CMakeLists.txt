@@ -21,15 +21,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# EXE 옆에 DLL 이 놓이도록 산출물을 한곳에 모은다 (실행 시 DLL 탐색 문제 방지)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
-foreach(cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
-  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${cfg} "${CMAKE_BINARY_DIR}/bin")
-  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${cfg} "${CMAKE_BINARY_DIR}/bin")
-  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${cfg} "${CMAKE_BINARY_DIR}/lib")
-endforeach()
+# logscope.exe 와 logcore.dll 이 같은 폴더에 놓이게 한다. EXE 는 앱 폴더와
+# System32 에서만 DLL 을 찾도록 링크돼 있어서(docs/SECURITY.md 3.1), 둘이 흩어져
+# 있으면 실행 자체가 안 된다. $<CONFIG> 를 쓰면 Visual Studio 처럼 구성이 여러 개인
+# 생성기에서도 Debug 와 Release 산출물이 서로 덮어쓰지 않는다.
+#   build/<preset>/bin/Debug/{logscope.exe, logcore.dll}
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/$<CONFIG>")
 
 if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
@@ -67,13 +66,16 @@ if(MSVC)
     target_link_options(logscope_hardening INTERFACE /HIGHENTROPYVA)
   endif()
 else()
-  # mingw-w64 크로스 빌드 (문법 검증용 경로)
+  # mingw-w64 크로스 빌드 (CI/문법 검증용 경로)
+  # -municode 는 여기 넣지 않는다. wmain/wWinMain 진입점을 강제하기 때문에
+  # 콘솔 테스트 실행 파일까지 wWinMain 을 요구하게 된다. 필요한 곳(logscope.exe)
+  # 에서만 붙인다.
   target_compile_options(logscope_hardening INTERFACE
-    -Wall -Wextra -Wconversion -Wshadow -municode)
+    -Wall -Wextra -Wconversion -Wshadow)
   target_compile_definitions(logscope_hardening INTERFACE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_link_options(logscope_hardening INTERFACE
-    -municode -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va)
+    -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va)
 endif()
 
 add_subdirectory(src/core)
@@ -84,4 +86,4 @@ if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
 
-message(STATUS "LogScope ${PROJECT_VERSION} — 산출물: ${CMAKE_BINARY_DIR}/bin (logcore.dll, logscope.exe)")
+message(STATUS "LogScope ${PROJECT_VERSION} — 산출물: ${CMAKE_BINARY_DIR}/bin/<Config>/ (logscope.exe + logcore.dll)")

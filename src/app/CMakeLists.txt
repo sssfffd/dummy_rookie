@@ -22,6 +22,10 @@ target_link_libraries(logscope PRIVATE d2d1 dwrite ole32 shell32 user32 gdi32 ad
 if(MSVC)
   target_sources(logscope PRIVATE logscope.manifest)
   target_link_options(logscope PRIVATE ${LOGSCOPE_DEPLOAD_EXE})
+else()
+  # mingw 는 wWinMain 진입점을 쓰려면 -municode 가 필요하다. GUI 실행 파일에만 붙인다.
+  target_compile_options(logscope PRIVATE -municode)
+  target_link_options(logscope PRIVATE -municode -mwindows)
 endif()
 
 set_target_properties(logscope PROPERTIES OUTPUT_NAME "logscope")

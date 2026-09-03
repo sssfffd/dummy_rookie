@@ -1,0 +1,38 @@
+{
+  // ---- CMake ----------------------------------------------------------
+  // CMakePresets.json 을 쓴다. 키트(kit) 선택 대신 프리셋 선택으로 동작한다.
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+  // Ninja 프리셋을 쓸 때 MSVC 개발자 환경(vcvars)을 확장이 알아서 잡아 준다.
+  "cmake.useVsDeveloperEnvironment": "auto",
+  // 상태 표시줄 대신 사이드바 CMake 패널을 쓴다.
+  "cmake.options.statusBarVisibility": "compact",
+
+  // ---- IntelliSense ---------------------------------------------------
+  // 인클루드 경로와 컴파일 옵션을 CMake 에서 그대로 가져온다.
+  // 이걸 켜 두면 c_cpp_properties.json 을 손으로 관리할 필요가 없다.
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.cppStandard": "c++17",
+
+  // ---- 파일 --------------------------------------------------------------
+  // 소스에 한글 주석이 있다. MSVC 에는 /utf-8 을 이미 주고 있으므로
+  // 편집기도 UTF-8 로 고정해야 주석이 깨지지 않는다.
+  "files.encoding": "utf8",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.exclude": {
+    "**/build": true,
+    "**/.vs": true
+  },
+
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.tabSize": 4,
+    "editor.rulers": [100]
+  },
+  "[c]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.tabSize": 4,
+    "editor.rulers": [100]
+  }
+}

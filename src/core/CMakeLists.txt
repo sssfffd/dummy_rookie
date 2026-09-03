@@ -28,4 +28,5 @@ endif()
 #   uuid           : CLSID_OpcFactory 등 인터페이스 GUID
 target_link_libraries(logcore PRIVATE ole32 oleaut32 xmllite shlwapi uuid)
 
-set_target_properties(logcore PROPERTIES OUTPUT_NAME "logcore")
+# PREFIX "" 를 지정해야 mingw 에서도 liblogcore.dll 이 아니라 logcore.dll 이 나온다.
+set_target_properties(logcore PROPERTIES OUTPUT_NAME "logcore" PREFIX "")

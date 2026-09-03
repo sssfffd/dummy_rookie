@@ -1,0 +1,10 @@
+# 기존 코드가 따르고 있는 스타일. 형식 변경으로 diff 가 지저분해지지 않게 고정해 둔다.
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4
+DerivePointerAlignment: false
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+SortIncludes: CaseSensitive

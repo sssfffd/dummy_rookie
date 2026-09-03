@@ -1,0 +1,21 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Win32",
+      // 인클루드 경로와 매크로는 CMake Tools 가 넘겨준다. 아래 값들은 확장이
+      // 아직 구성을 못 읽었을 때만 쓰이는 대비책이다.
+      "configurationProvider": "ms-vscode.cmake-tools",
+      "compilerPath": "cl.exe",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "windows-msvc-x64",
+      "includePath": [
+        "${workspaceFolder}/src/core/include",
+        "${workspaceFolder}/src/core",
+        "${workspaceFolder}/src/app"
+      ],
+      "defines": ["UNICODE", "_UNICODE", "WIN32_LEAN_AND_MEAN", "NOMINMAX"]
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+
+    {
+      "name": "vs2022",
+      "displayName": "Visual Studio 2022 (x64)",
+      "description": "가장 손이 덜 갑니다. VS Code 를 그냥 켜서 써도 되고, build/vs2022/LogScope.sln 을 Visual Studio 로 열 수도 있습니다.",
+      "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+
+    {
+      "name": "ninja-debug",
+      "displayName": "Ninja · Debug (x64)",
+      "description": "빌드가 훨씬 빠릅니다. MSVC 개발자 환경이 필요한데 CMake Tools 확장이 보통 알아서 잡아 줍니다.",
+      "inherits": "base",
+      "generator": "Ninja",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "ninja-release",
+      "displayName": "Ninja · Release (x64)",
+      "inherits": "ninja-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    }
+  ],
+
+  "buildPresets": [
+    {
+      "name": "vs2022-debug",
+      "displayName": "VS 2022 · Debug",
+      "configurePreset": "vs2022",
+      "configuration": "Debug"
+    },
+    {
+      "name": "vs2022-release",
+      "displayName": "VS 2022 · Release",
+      "configurePreset": "vs2022",
+      "configuration": "Release"
+    },
+    { "name": "ninja-debug", "displayName": "Ninja · Debug", "configurePreset": "ninja-debug" },
+    { "name": "ninja-release", "displayName": "Ninja · Release", "configurePreset": "ninja-release" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "vs2022-debug",
+      "displayName": "VS 2022 · Debug",
+      "configurePreset": "vs2022",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "vs2022-release",
+      "displayName": "VS 2022 · Release",
+      "configurePreset": "vs2022",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ninja-debug",
+      "displayName": "Ninja · Debug",
+      "configurePreset": "ninja-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ninja-release",
+      "displayName": "Ninja · Release",
+      "configurePreset": "ninja-release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

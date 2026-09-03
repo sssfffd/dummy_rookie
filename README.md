@@ -29,22 +29,72 @@ DLL 과 EXE 가 함께 나오는 이 구성은 이렇게 부릅니다.
 파서는 콘솔 도구나 테스트에서 그대로 재사용되고 (`tests/logcore_test.cpp`),
 UI 를 손봐도 파싱 로직이 흔들리지 않습니다.
 
-## 빌드 (Windows 11 + Visual Studio 2022)
+## 빌드
+
+### 미리 있어야 하는 것
+
+VS Code 자체에는 컴파일러가 없습니다. 아래 두 가지가 먼저 깔려 있어야 합니다.
+
+1. **MSVC 툴체인** — [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/)
+   (Visual Studio 2022 전체를 깔아도 됩니다). 설치기에서 **"C++를 사용한 데스크톱 개발"**
+   워크로드를 고르면 MSVC v143 · Windows 11 SDK · CMake · Ninja 가 함께 들어옵니다.
+2. **VS Code 확장** 두 개 — 저장소를 열면 설치를 권합니다 (`.vscode/extensions.json`).
+   - `ms-vscode.cpptools` — C/C++ 언어 지원과 디버거
+   - `ms-vscode.cmake-tools` — CMake 구성 · 빌드 · 테스트 통합
+
+### VS Code 에서 (권장)
+
+저장소 폴더를 열면 CMake Tools 가 `CMakePresets.json` 을 읽어 자동으로 구성합니다.
+
+1. `Ctrl+Shift+P` → **CMake: Select Configure Preset** → **Visual Studio 2022 (x64)**
+2. `Ctrl+Shift+P` → **CMake: Select Build Preset** → **VS 2022 · Debug**
+3. **`F7`** 로 빌드, **`F5`** 로 디버그 실행, **`Ctrl+Shift+P` → CMake: Run Tests** 로 테스트
+
+빌드는 왼쪽 사이드바의 CMake 패널에서도 다 됩니다. `F5` 는 빌드를 먼저 돌린 뒤
+실행하므로 보통 `F5` 하나면 충분합니다.
+
+`launch.json` 에는 세 가지가 들어 있습니다.
+
+| 구성 | 하는 일 |
+|---|---|
+| **logscope 실행** | 고른 프리셋의 바이너리를 그냥 띄웁니다 |
+| **logscope 실행 (파일 지정)** | 로그 파일 경로를 물어보고 그 파일을 연 채로 시작합니다. 파일 대화상자를 안 거쳐서 파서를 반복 디버깅할 때 편합니다 |
+| **logcore_test 디버그** | 코어 테스트를 콘솔에서 디버깅합니다 |
+
+IntelliSense(인클루드 경로, 매크로)는 CMake 구성에서 그대로 가져오므로
+`c_cpp_properties.json` 을 손댈 일이 없습니다.
+
+### 프리셋
+
+| 프리셋 | 생성기 | 언제 |
+|---|---|---|
+| `vs2022` | Visual Studio 17 2022 | **기본값.** 별도 환경 설정이 필요 없고, `build/vs2022/LogScope.sln` 을 Visual Studio 로 열 수도 있습니다 |
+| `ninja-debug` / `ninja-release` | Ninja | 빌드가 훨씬 빠릅니다. MSVC 개발자 환경이 필요한데 CMake Tools 가 보통 알아서 잡습니다(`cmake.useVsDeveloperEnvironment`). 안 잡히면 **개발자 명령 프롬프트**에서 `code .` 로 VS Code 를 띄우세요 |
+
+### 터미널에서
 
 ```powershell
-cmake -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-ctest --test-dir build -C Release
+cmake --preset vs2022
+cmake --build --preset vs2022-debug
+ctest --preset vs2022-debug
 ```
 
-산출물은 `build\bin\Release\` 에 `logscope.exe` 와 `logcore.dll` 두 개가 나란히
-놓입니다. **두 파일은 같은 폴더에 있어야 합니다** (EXE 는 앱 폴더와 System32
-에서만 DLL 을 찾도록 링크돼 있습니다 — `docs/SECURITY.md` 3.1 참고).
+Release 는 `vs2022-release`, 빠른 빌드는 `ninja-debug` / `ninja-release` 로 바꾸면 됩니다.
 
-Visual Studio 에서 *폴더 열기* 로 저장소를 열어도 CMake 통합이 그대로 동작합니다.
+### 산출물
 
-필요한 것: MSVC v143 툴셋, Windows 10/11 SDK, CMake 3.21 이상. 그 외에는 없습니다.
-`vcpkg` 나 NuGet 복원 단계가 없고, 빌드 중 네트워크를 타지 않습니다.
+```
+build/<프리셋>/bin/<구성>/
+  logscope.exe
+  logcore.dll
+```
+
+예: `build\vs2022\bin\Debug\`. **두 파일은 반드시 같은 폴더에 있어야 합니다** —
+EXE 가 앱 폴더와 System32 에서만 DLL 을 찾도록 링크돼 있습니다
+(`docs/SECURITY.md` 3.1). 배포할 때도 둘을 함께 옮기세요.
+
+`/MD` 로 빌드하므로 다른 PC 에 배포하려면
+[Visual C++ 재배포 가능 패키지](https://aka.ms/vs/17/release/vc_redist.x64.exe)가 필요합니다.
 
 ## 입력 데이터 형식
 
@@ -101,6 +151,8 @@ Windows 의 앱 테마(밝게/어둡게)와 모니터별 DPI 를 따라갑니다
 
 ```
 CMakeLists.txt          공통 컴파일/링크 설정 (경고 수준, 보안 완화 옵션)
+CMakePresets.json       구성/빌드/테스트 프리셋
+.vscode/                VS Code 확장 추천 · 빌드 작업 · 디버그 구성
 src/core/               logcore.dll
   include/logcore/logcore.h   공개 C ABI — DLL 경계를 넘는 유일한 계약
   logcore.cpp                 ABI 구현
