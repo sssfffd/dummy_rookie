@@ -166,6 +166,7 @@ src/app/                logscope.exe
   theme.h                     팔레트와 치수
 tests/logcore_test.cpp  코어 로직 회귀 테스트 (71개 검사)
 docs/SECURITY.md        외부 라이브러리 목록과 위험 분석
+claude-log/             Claude 와 주고받은 대화 기록 (요청 · 답변 · 해당 커밋)
 prototype/web/          초기 웹 프로토타입 (참고용, 빌드에 포함되지 않음)
 ```
 
