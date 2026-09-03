@@ -1,7 +1,7 @@
 # 09 · C4146 컴파일 오류, 열이 IO 채널인 배치, 시트 중간에서 시작하는 표
 
 - **날짜** 2026-09-03
-- **커밋** 이 커밋
+- **커밋** [`9f456a7`](../../../commit/9f456a7) Detect table layout and skip sheet preambles; fix C4146
 - **바뀐 파일** `src/core/text_util.cpp`, `src/core/dataset.cpp`, `src/core/dataset.h`, `src/core/logcore.cpp`, `src/core/include/logcore/logcore.h`, `src/app/app.cpp`, `src/app/app.h`, `tests/logcore_test.cpp`, `README.md`, `prototype/web/index.html`
 
 ## 요청

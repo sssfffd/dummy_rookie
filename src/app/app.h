@@ -33,9 +33,19 @@ private:
 };
 
 enum class ButtonId {
-    None, Open, OrientAuto, OrientRows, OrientCols, Fit, ClearCursors,
+    None, Open, OrientAuto, OrientRows, OrientCols,
+    ModeLanes, ModeOverlay, Normalize,
+    ZoomIn, ZoomOut, Fit, ClearCursors,
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState
 };
+
+// 레인: 채널마다 한 줄, 각자 세로 눈금. 파형을 훑어볼 때.
+// 겹쳐보기: 가로축 시간, 세로축 값 하나를 여러 채널이 공유. 값을 비교할 때.
+enum class PlotMode { Lanes, Overlay };
+
+// 겹쳐보기에서 한 번에 그릴 수 있는 채널 수. 범주형 색이 여덟 개까지만
+// 서로 구분되므로 그 이상은 색으로 구별이 안 된다.
+constexpr uint32_t kMaxOverlay = 8;
 
 struct Button {
     ButtonId id = ButtonId::None;
@@ -46,7 +56,7 @@ struct Button {
 };
 
 struct Rects {
-    D2D1_RECT_F toolbar{}, rail{}, railList{}, plot{}, axis{}, status{};
+    D2D1_RECT_F toolbar{}, controls{}, rail{}, railList{}, plot{}, axis{}, status{};
 };
 
 class App {
@@ -75,14 +85,22 @@ private:
     // ---- 그리기 ----
     void Render();
     void DrawToolbar(const Rects& r);
+    void DrawControls(const Rects& r);
     void DrawRail(const Rects& r);
     void DrawPlot(const Rects& r);
+    void DrawLanesView(const Rects& r);
+    void DrawOverlayView(const Rects& r);
+    void DrawOverlayReadout(const Rects& r, const std::vector<uint32_t>& shown,
+                            double lo, double hi);
     void DrawAxis(const Rects& r);
     void DrawStatus(const Rects& r);
     void DrawEmptyState(const Rects& r);
     void DrawLaneDigital(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot);
     void DrawLaneAnalog(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot);
     void DrawLaneState(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot);
+    // 겹쳐보기용: 하나의 세로 눈금 위에 채널 하나를 그린다.
+    void DrawSeries(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
+                    double lo, double hi, const D2D1_COLOR_F& color);
     // Win32 의 DrawText 매크로와 부딪히지 않도록 이름을 달리한다.
     void DrawLabel(const std::wstring& s, IDWriteTextFormat* fmt,
                    const D2D1_RECT_F& box, const D2D1_COLOR_F& color);
@@ -97,12 +115,21 @@ private:
     void OpenFileDialog();
     void ResetViewToData();
     void ClampView(double a, double b);
+    float ZoomAnchorX() const;
     void ZoomAt(float clientX, double factor);
     void IndexRange(int& i0, int& i1) const;
     int  IndexAt(double t) const;
     bool ChannelVisibleInList(uint32_t ch) const;
+    // 겹쳐보기에 실제로 그릴 채널 목록 (선택된 것 중 앞에서부터 kMaxOverlay 개)
+    std::vector<uint32_t> OverlayChannels() const;
+    // 현재 보이는 시간 구간에서의 값 범위. 확대하면 세로 눈금도 따라 좁혀진다.
+    void OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& hi) const;
+    // 채널 하나의 값을 세로 눈금 좌표로. 정규화가 켜져 있으면 0..1 로 접는다.
+    double SeriesValue(uint32_t ch, double raw) const;
 
     // ---- 좌표 ----
+    // 모드에 따라 달라지는 플롯 가로 구간 (왼쪽 끝, 폭)
+    void PlotSpan(const D2D1_RECT_F& plot, float& left, float& width) const;
     float XOfTime(double t, const D2D1_RECT_F& plot) const;
     double TimeOfX(float x, const D2D1_RECT_F& plot) const;
 
@@ -153,6 +180,9 @@ private:
     bool dragging_ = false, dragMoved_ = false, dragShift_ = false;
     float dragStartX_ = 0.0f;
     double dragT0_ = 0.0, dragT1_ = 0.0;
+
+    PlotMode mode_ = PlotMode::Lanes;
+    bool normalize_ = false;
 
     std::wstring query_;
     int filter_ = -1;  // -1 = 전체, 아니면 LcChannelType

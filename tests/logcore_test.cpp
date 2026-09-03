@@ -358,6 +358,54 @@ void TestExplicitOrientationOverridesAuto() {
     }
 }
 
+
+void TestRealNamesSurviveDetection() {
+    std::printf("엑셀에 적힌 IO 이름이 그대로 들어오는가\n");
+    // 보고된 모양: 머리말이 있고, A열은 비어 있고, 표는 B열부터 시작하며
+    // IO 이름이 한 행에 가로로 늘어서 있다. 예전 코드는 A열을 이름 열로 읽어서
+    // 전부 비어 있으니 IO_1, IO_2 ... 로 붙였다.
+    lc::Grid g;
+    g.push_back({Txt(L"설비"), Txt(L"라인 2호기")});
+    g.push_back({});
+    g.push_back({None(), Txt(L"Time [s]"), Txt(L"DI_00_CYCLE_START"),
+                 Txt(L"DO_10_MOTOR_EN"), Txt(L"AI_TEMP_BARREL1")});
+    g.push_back({None(), Num(0.00), Num(0), Num(0), Num(181.5)});
+    g.push_back({None(), Num(0.01), Num(1), Num(1), Num(182.0)});
+    g.push_back({None(), Num(0.02), Num(0), Num(1), Num(182.4)});
+    g.push_back({None(), Num(0.03), Num(0), Num(0), Num(183.1)});
+
+    lc::Dataset ds;
+    lc::Limits lim;
+    CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+    CHECK(ds.orientation == LC_ORIENT_COLS);
+    CHECK(ds.channels.size() == 3);
+    // 여기가 핵심 — IO_1 이 아니라 엑셀에 적힌 이름이어야 한다.
+    CHECK(ds.channels[0].name == L"DI_00_CYCLE_START");
+    CHECK(ds.channels[1].name == L"DO_10_MOTOR_EN");
+    CHECK(ds.channels[2].name == L"AI_TEMP_BARREL1");
+    CHECK(ds.channels[0].type == LC_CH_DIGITAL);
+    CHECK(ds.channels[2].type == LC_CH_ANALOG);
+    CHECK(ds.time_unit == L"s");
+}
+
+void TestMissingNamesAreReported() {
+    std::printf("이름이 정말 비어 있으면 그 사실을 알린다\n");
+    lc::Grid g;
+    g.push_back({Txt(L"Time"), Num(0.0), Num(0.1), Num(0.2)});
+    g.push_back({Txt(L"DI_00"), Num(0), Num(1), Num(0)});
+    g.push_back({None(), Num(5), Num(6), Num(7)});     // 이름 칸이 빈 채널
+
+    lc::Dataset ds;
+    lc::Limits lim;
+    CHECK(lc::build_dataset(g, LC_ORIENT_ROWS, lim, ds) == LC_OK);
+    CHECK(ds.channels.size() == 2);
+    CHECK(ds.channels[0].name == L"DI_00");
+    CHECK(ds.channels[1].name == L"IO_2");
+    // 임시 이름을 붙였다는 사실이 사용자에게 보여야 한다. 조용히 IO_n 을 달면
+    // 배치를 잘못 읽은 것인지 원래 비어 있는 것인지 알 수가 없다.
+    CHECK(ds.notes.find(L"임시 이름") != std::wstring::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -373,6 +421,8 @@ int main() {
     TestPreambleRowsOrientation();
     TestCounterDoesNotStealTimeAxis();
     TestExplicitOrientationOverridesAuto();
+    TestRealNamesSurviveDetection();
+    TestMissingNamesAreReported();
 
     std::printf("\n%d개 검사 중 %d개 실패\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

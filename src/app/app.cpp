@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 namespace app {
 namespace {
@@ -240,11 +241,13 @@ Rects App::CalcRects() const {
 
     Rects r;
     r.toolbar = Rect(0, 0, w, S(metrics::kToolbarH));
+    // 버튼이 늘어나 한 줄에 안 들어가므로 보기·확대 컨트롤은 아래 줄로 뺀다.
+    r.controls = Rect(0, r.toolbar.bottom, w, r.toolbar.bottom + S(metrics::kControlsH));
     r.status = Rect(0, h - S(metrics::kStatusH), w, h);
     const float railW = (std::min)(S(metrics::kRailW), w * 0.42f);
-    r.rail = Rect(0, r.toolbar.bottom, railW, r.status.top);
+    r.rail = Rect(0, r.controls.bottom, railW, r.status.top);
     r.axis = Rect(r.rail.right, r.status.top - S(metrics::kAxisH), w, r.status.top);
-    r.plot = Rect(r.rail.right, r.toolbar.bottom, w, r.axis.top);
+    r.plot = Rect(r.rail.right, r.controls.bottom, w, r.axis.top);
 
     const float head = S(metrics::kSearchH) + S(58.0f);
     r.railList = Rect(r.rail.left, r.rail.top + head, r.rail.right, r.rail.bottom);
@@ -402,10 +405,19 @@ void App::ClampView(double a, double b) {
     t1_ = b;
 }
 
+// 버튼으로 확대할 때의 기준점. 화면 가운데를 고정하고 양옆을 당긴다.
+float App::ZoomAnchorX() const {
+    const Rects r = CalcRects();
+    float left = 0.0f, w = 10.0f;
+    PlotSpan(r.plot, left, w);
+    return left + w * 0.5f;
+}
+
 void App::ZoomAt(float clientX, double factor) {
     const Rects r = CalcRects();
-    const float x = (std::min)((std::max)(clientX, r.plot.left + S(metrics::kNameGutter)),
-                               r.plot.right - S(metrics::kValueGutter));
+    float left = 0.0f, w = 10.0f;
+    PlotSpan(r.plot, left, w);
+    const float x = (std::min)((std::max)(clientX, left), left + w);
     const double anchor = TimeOfX(x, r.plot);
     ClampView(anchor - (anchor - t0_) * factor, anchor + (t1_ - anchor) * factor);
 }
@@ -428,16 +440,28 @@ int App::IndexAt(double t) const { return ds_ ? lc_index_at(ds_, t) : -1; }
 // 좌표와 문자열
 // ===========================================================================
 
+// 두 모드가 가로 여백이 다르다. 레인은 왼쪽에 이름, 오른쪽에 값 거터를 두고,
+// 겹쳐보기는 왼쪽에 세로 눈금만 둔다. 시간 <-> 화면 좌표 변환을 한곳에 모은다.
+void App::PlotSpan(const D2D1_RECT_F& plot, float& left, float& width) const {
+    if (mode_ == PlotMode::Overlay) {
+        left = plot.left + S(metrics::kOverlayAxisW);
+        width = (std::max)(plot.right - S(12.0f) - left, 10.0f);
+    } else {
+        left = plot.left + S(metrics::kNameGutter);
+        width = (std::max)(plot.right - S(metrics::kValueGutter) - left, 10.0f);
+    }
+}
+
 float App::XOfTime(double t, const D2D1_RECT_F& plot) const {
-    const float left = plot.left + S(metrics::kNameGutter);
-    const float w = (std::max)(plot.right - S(metrics::kValueGutter) - left, 10.0f);
+    float left = 0.0f, w = 10.0f;
+    PlotSpan(plot, left, w);
     if (!(t1_ > t0_)) return left;
     return left + static_cast<float>((t - t0_) / (t1_ - t0_)) * w;
 }
 
 double App::TimeOfX(float x, const D2D1_RECT_F& plot) const {
-    const float left = plot.left + S(metrics::kNameGutter);
-    const float w = (std::max)(plot.right - S(metrics::kValueGutter) - left, 10.0f);
+    float left = 0.0f, w = 10.0f;
+    PlotSpan(plot, left, w);
     return t0_ + static_cast<double>((x - left) / w) * (t1_ - t0_);
 }
 
@@ -603,11 +627,33 @@ void App::RebuildButtons(const Rects& r) {
     };
 
     add(ButtonId::Open, L"엑셀 파일 열기", true, false, S(14.0f));
-    add(ButtonId::OrientAuto, L"자동", false, orientation_ == LC_ORIENT_AUTO, S(2.0f));
-    add(ButtonId::OrientRows, L"행 = IO", false, orientation_ == LC_ORIENT_ROWS, S(2.0f));
-    add(ButtonId::OrientCols, L"열 = IO", false, orientation_ == LC_ORIENT_COLS, S(14.0f));
-    add(ButtonId::Fit, L"전체 보기", false, false, S(2.0f));
-    add(ButtonId::ClearCursors, L"커서 해제", false, false, S(14.0f));
+
+    // 아래 컨트롤 줄
+    const float ctlH = S(24.0f);
+    const float cy = r.controls.top + (r.controls.bottom - r.controls.top - ctlH) * 0.5f;
+    float cx = pad;
+    auto addCtl = [&](ButtonId id, const wchar_t* label, bool pressed, float gap) {
+        Button b;
+        b.id = id;
+        b.label = label;
+        b.pressed = pressed;
+        const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(18.0f);
+        b.rect = Rect(cx, cy, cx + w, cy + ctlH);
+        cx += w + gap;
+        buttons_.push_back(std::move(b));
+    };
+    addCtl(ButtonId::ModeLanes, L"레인", mode_ == PlotMode::Lanes, S(2.0f));
+    addCtl(ButtonId::ModeOverlay, L"겹쳐보기", mode_ == PlotMode::Overlay, S(16.0f));
+    addCtl(ButtonId::OrientAuto, L"자동", orientation_ == LC_ORIENT_AUTO, S(2.0f));
+    addCtl(ButtonId::OrientRows, L"행 = IO", orientation_ == LC_ORIENT_ROWS, S(2.0f));
+    addCtl(ButtonId::OrientCols, L"열 = IO", orientation_ == LC_ORIENT_COLS, S(16.0f));
+    if (mode_ == PlotMode::Overlay) {
+        addCtl(ButtonId::Normalize, L"0–1 정규화", normalize_, S(16.0f));
+    }
+    addCtl(ButtonId::ZoomOut, L"—", false, S(2.0f));
+    addCtl(ButtonId::ZoomIn, L"＋", false, S(2.0f));
+    addCtl(ButtonId::Fit, L"전체 보기", false, S(16.0f));
+    addCtl(ButtonId::ClearCursors, L"커서 해제", false, S(2.0f));
 
     // 레일 안의 버튼들
     const float ry = r.rail.top + S(24.0f) + S(metrics::kSearchH) + S(8.0f);
@@ -657,6 +703,7 @@ void App::Render() {
     DrawAxis(r);
     DrawRail(r);
     DrawToolbar(r);
+    DrawControls(r);
     DrawStatus(r);
 
     if (rt_->EndDraw() == static_cast<HRESULT>(D2DERR_RECREATE_TARGET)) DiscardDeviceResources();
@@ -693,6 +740,25 @@ void App::DrawToolbar(const Rects& r) {
     DrawLabel(Ellipsize(dw_.get(), meta, fMono_.get(), r.toolbar.right - x - S(10.0f)),
               fMono_.get(), Rect(x, r.toolbar.top, r.toolbar.right - S(10.0f), r.toolbar.bottom),
               ds_ ? pal_.ink2 : pal_.ink3);
+}
+
+void App::DrawControls(const Rects& r) {
+    Fill(r.controls, pal_.surface);
+    StrokeLine(r.controls.left, Px(r.controls.bottom), r.controls.right,
+               Px(r.controls.bottom), pal_.hair);
+    for (const Button& b : buttons_) {
+        if (b.rect.top >= r.controls.top && b.rect.bottom <= r.controls.bottom) {
+            DrawButton(b, hotButton_ == b.id);
+        }
+    }
+    // 조작법을 눈에 보이는 곳에 둔다. 확대·축소가 있는지 모르면 없는 것과 같다.
+    DrawLabel(mode_ == PlotMode::Overlay
+                  ? L"휠 = 확대·축소 · 드래그 = 이동 · 클릭 = 커서 A · Shift+클릭 = 커서 B"
+                  : L"Ctrl+휠 = 확대·축소 · 휠 = 채널 스크롤 · 드래그 = 이동 · 클릭 = 커서 A",
+              fSmallRight_.get(),
+              Rect(r.controls.left, r.controls.top, r.controls.right - S(12.0f),
+                   r.controls.bottom),
+              pal_.ink3);
 }
 
 void App::DrawRail(const Rects& r) {
@@ -787,7 +853,11 @@ void App::DrawEmptyState(const Rects& r) {
 void App::DrawPlot(const Rects& r) {
     Fill(r.plot, pal_.surface);
     if (!ds_ || lc_channel_count(ds_) == 0) { DrawEmptyState(r); return; }
+    if (mode_ == PlotMode::Overlay) { DrawOverlayView(r); return; }
+    DrawLanesView(r);
+}
 
+void App::DrawLanesView(const Rects& r) {
     const float gutterX = r.plot.left + S(metrics::kNameGutter);
     const float rightX = r.plot.right - S(metrics::kValueGutter);
     const bool timeLike = lc_time_kind(ds_) == LC_TIME_CLOCK_MS ||
@@ -1031,13 +1101,245 @@ void App::DrawLaneState(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot) 
     }
 }
 
+
+std::vector<uint32_t> App::OverlayChannels() const {
+    std::vector<uint32_t> out;
+    if (!ds_) return out;
+    for (uint32_t ch = 0; ch < lc_channel_count(ds_) && out.size() < kMaxOverlay; ++ch) {
+        if (selected_[ch]) out.push_back(ch);
+    }
+    return out;
+}
+
+double App::SeriesValue(uint32_t ch, double raw) const {
+    if (!normalize_) return raw;
+    const double lo = lc_channel_min(ds_, ch);
+    const double hi = lc_channel_max(ds_, ch);
+    const double span = (hi > lo) ? (hi - lo) : 1.0;
+    return (raw - lo) / span;
+}
+
+void App::OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& hi) const {
+    if (normalize_) { lo = 0.0; hi = 1.0; return; }
+    lo = std::numeric_limits<double>::infinity();
+    hi = -std::numeric_limits<double>::infinity();
+
+    // 지금 화면에 보이는 시간 구간만 본다. 확대하면 세로 눈금도 같이 좁혀져서
+    // 작은 흔들림을 볼 수 있다.
+    int i0 = 0, i1 = 0;
+    IndexRange(i0, i1);
+    const double* t = lc_times(ds_);
+    if (!t || i0 < 0 || i1 < i0) { lo = 0.0; hi = 1.0; return; }
+
+    for (uint32_t ch : shown) {
+        const double* v = lc_channel_values(ds_, ch);
+        if (!v) continue;
+        for (int i = i0; i <= i1; ++i) {
+            if (!std::isfinite(v[i])) continue;
+            lo = (std::min)(lo, v[i]);
+            hi = (std::max)(hi, v[i]);
+        }
+    }
+    if (!std::isfinite(lo) || !std::isfinite(hi)) { lo = 0.0; hi = 1.0; return; }
+    if (hi <= lo) { hi = lo + 1.0; }
+    const double pad = (hi - lo) * 0.08;
+    lo -= pad;
+    hi += pad;
+}
+
+void App::DrawSeries(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
+                     double lo, double hi, const D2D1_COLOR_F& color) {
+    const double* v = lc_channel_values(ds_, ch);
+    const double* t = lc_times(ds_);
+    if (!v || !t || !(hi > lo)) return;
+    int i0 = 0, i1 = 0;
+    IndexRange(i0, i1);
+    if (i0 < 0 || i1 < i0) return;
+
+    auto yOf = [&](double val) {
+        return bottom - static_cast<float>((SeriesValue(ch, val) - lo) / (hi - lo)) *
+                            (bottom - top);
+    };
+    // 디지털과 상태 채널은 값이 순간적으로 바뀌므로 계단으로 그린다. 비스듬한
+    // 선으로 이으면 없는 중간 값이 있는 것처럼 보인다.
+    const bool step = lc_channel_type(ds_, ch) != LC_CH_ANALOG;
+
+    Path p;
+    if (!p.Begin(d2d_.get())) return;
+    bool pen = false;
+    float lastY = 0.0f;
+    for (int i = i0; i <= i1; ++i) {
+        if (!std::isfinite(v[i])) { pen = false; continue; }
+        const float x = XOfTime(t[i], plot);
+        const float y = yOf(v[i]);
+        if (!pen) { p.Move(x, y); pen = true; }
+        else if (step) { p.Line(x, lastY); p.Line(x, y); }
+        else { p.Line(x, y); }
+        lastY = y;
+    }
+    if (!p.End()) return;
+    brush_->SetColor(color);
+    rt_->DrawGeometry(p.geo.get(), brush_.get(), S(2.0f));
+}
+
+void App::DrawOverlayReadout(const Rects& r, const std::vector<uint32_t>& shown,
+                             double lo, double hi) {
+    (void)lo;
+    (void)hi;
+    const float gutterX = r.plot.left + S(metrics::kOverlayAxisW);
+    const float rightX = r.plot.right - S(12.0f);
+    if (hoverX_ < gutterX || hoverX_ > rightX) return;
+    const int idx = IndexAt(TimeOfX(hoverX_, r.plot));
+    if (idx < 0) return;
+
+    // 커서 위치의 값들을 한 상자에 모아 보여 준다.
+    const float lineH = S(16.0f);
+    const float boxH = lineH * (static_cast<float>(shown.size()) + 1) + S(10.0f);
+    float boxW = S(150.0f);
+    auto value_at = [&](uint32_t ch) {
+        const double* v = lc_channel_values(ds_, ch);
+        return v ? v[idx] : std::numeric_limits<double>::quiet_NaN();
+    };
+    for (uint32_t ch : shown) {
+        const std::wstring row = std::wstring(lc_channel_name(ds_, ch)) + L"  " +
+                                 FormatValue(ch, value_at(ch));
+        boxW = (std::max)(boxW, MeasureText(dw_.get(), row, fMono_.get()) + S(40.0f));
+    }
+    float bx = hoverX_ + S(14.0f);
+    if (bx + boxW > r.plot.right - S(6.0f)) bx = hoverX_ - boxW - S(14.0f);
+    bx = (std::max)(bx, r.plot.left + S(4.0f));
+    const float by = r.plot.top + S(8.0f);
+
+    const D2D1_RECT_F box = Rect(bx, by, bx + boxW, by + boxH);
+    const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(box, S(5.0f), S(5.0f));
+    brush_->SetColor(pal_.surface);
+    rt_->FillRoundedRectangle(rr, brush_.get());
+    brush_->SetColor(pal_.hair);
+    rt_->DrawRoundedRectangle(rr, brush_.get(), 1.0f);
+
+    const double* t = lc_times(ds_);
+    DrawLabel(FormatTime(t[idx], 0.0), fSmall_.get(),
+              Rect(bx + S(9.0f), by + S(3.0f), box.right, by + S(3.0f) + lineH), pal_.ink3);
+
+    float y = by + S(3.0f) + lineH;
+    for (uint32_t ch : shown) {
+        const D2D1_COLOR_F col = pal_.series[ch % 8];
+        const D2D1_RECT_F dot = Rect(bx + S(9.0f), y + lineH * 0.5f - S(3.0f),
+                                     bx + S(9.0f) + S(7.0f), y + lineH * 0.5f + S(4.0f));
+        Fill(dot, col);
+        DrawLabel(lc_channel_name(ds_, ch), fMono_.get(),
+                  Rect(dot.right + S(7.0f), y, box.right - S(70.0f), y + lineH), pal_.ink2);
+        DrawLabel(FormatValue(ch, value_at(ch)), fMonoRight_.get(),
+                  Rect(box.right - S(72.0f), y, box.right - S(9.0f), y + lineH), pal_.ink);
+        y += lineH;
+    }
+}
+
+void App::DrawOverlayView(const Rects& r) {
+    const std::vector<uint32_t> shown = OverlayChannels();
+    const float axisW = S(metrics::kOverlayAxisW);
+    const float gutterX = r.plot.left + axisW;
+    const float rightX = r.plot.right - S(12.0f);
+    const float legendH = S(24.0f);
+    const float top = r.plot.top + legendH + S(10.0f);
+    const float bottom = r.plot.bottom - S(10.0f);
+
+    const bool timeLike = lc_time_kind(ds_) == LC_TIME_CLOCK_MS ||
+                          lc_time_kind(ds_) == LC_TIME_DATE_MS;
+    const Ticks xt = MakeTicks(t0_, t1_,
+                               (std::max)(2, static_cast<int>((rightX - gutterX) / S(110.0f))),
+                               timeLike);
+
+    if (shown.empty()) {
+        DrawLabel(L"표시할 채널이 없습니다 — 왼쪽 목록에서 IO 를 선택하세요", fUi_.get(),
+                  Rect(gutterX + S(16.0f), r.plot.top + S(20.0f), r.plot.right,
+                       r.plot.top + S(44.0f)),
+                  pal_.ink2);
+        return;
+    }
+
+    double lo = 0.0, hi = 1.0;
+    OverlayRange(shown, lo, hi);
+    const Ticks yt = MakeTicks(lo, hi, 5, false);
+
+    rt_->PushAxisAlignedClip(r.plot, D2D1_ANTIALIAS_MODE_ALIASED);
+
+    // 세로 눈금과 가로 격자
+    for (double yv : yt.at) {
+        if (yv < lo || yv > hi) continue;
+        const float y = bottom - static_cast<float>((yv - lo) / (hi - lo)) * (bottom - top);
+        StrokeLine(gutterX, Px(y), rightX, Px(y), pal_.grid);
+        DrawLabel(normalize_ ? FormatNumber(yv) : FormatNumber(yv), fSmallRight_.get(),
+                  Rect(r.plot.left + S(4.0f), y - S(8.0f), gutterX - S(8.0f), y + S(8.0f)),
+                  pal_.ink3);
+    }
+    // 세로 격자 (시간)
+    for (double tv : xt.at) {
+        const float x = XOfTime(tv, r.plot);
+        if (x < gutterX || x > rightX) continue;
+        StrokeLine(Px(x), top, Px(x), bottom, pal_.grid);
+    }
+    StrokeLine(Px(gutterX), top, Px(gutterX), bottom, pal_.axis);
+    StrokeLine(gutterX, Px(bottom), rightX, Px(bottom), pal_.axis);
+
+    // 파형
+    rt_->PushAxisAlignedClip(Rect(gutterX, top, rightX, bottom), D2D1_ANTIALIAS_MODE_ALIASED);
+    for (uint32_t ch : shown) DrawSeries(ch, r.plot, top, bottom, lo, hi, pal_.series[ch % 8]);
+    rt_->PopAxisAlignedClip();
+
+    // 범례
+    float lx = gutterX;
+    for (uint32_t ch : shown) {
+        const std::wstring name = lc_channel_name(ds_, ch);
+        const float w = MeasureText(dw_.get(), name, fMono_.get());
+        if (lx + w + S(30.0f) > rightX) break;
+        const D2D1_RECT_F swatch = Rect(lx, r.plot.top + legendH * 0.5f - S(2.0f),
+                                        lx + S(14.0f), r.plot.top + legendH * 0.5f + S(1.5f));
+        Fill(swatch, pal_.series[ch % 8]);
+        DrawLabel(name, fMono_.get(),
+                  Rect(swatch.right + S(6.0f), r.plot.top, swatch.right + S(6.0f) + w + S(4.0f),
+                       r.plot.top + legendH),
+                  pal_.ink2);
+        lx = swatch.right + S(6.0f) + w + S(18.0f);
+    }
+
+    uint32_t selected = 0;
+    for (bool b : selected_) selected += b ? 1u : 0u;
+    if (selected > kMaxOverlay) {
+        DrawLabel(Fmt(L"선택한 %u개 중 앞 %u개만 표시합니다", selected, kMaxOverlay),
+                  fSmallRight_.get(),
+                  Rect(rightX - S(240.0f), r.plot.top, rightX, r.plot.top + legendH),
+                  pal_.ink3);
+    }
+
+    // 커서
+    if (hoverX_ >= gutterX && hoverX_ <= rightX) {
+        StrokeLine(Px(hoverX_), top, Px(hoverX_), bottom, pal_.ink3);
+    }
+    auto cursor = [&](double t, const D2D1_COLOR_F& c, const wchar_t* tag) {
+        const float x = XOfTime(t, r.plot);
+        if (x < gutterX - 1.0f || x > rightX + 1.0f) return;
+        StrokeLine(Px(x), top, Px(x), bottom, c, S(1.5f));
+        const D2D1_RECT_F tab = Rect(x - S(9.0f), top, x + S(9.0f), top + S(15.0f));
+        Fill(tab, c);
+        DrawLabel(tag, fSmall_.get(), Rect(tab.left + S(6.0f), tab.top, tab.right, tab.bottom),
+                  pal_.onAccent);
+    };
+    if (hasA_) cursor(curA_, pal_.cursorA, L"A");
+    if (hasB_) cursor(curB_, pal_.cursorB, L"B");
+
+    DrawOverlayReadout(r, shown, lo, hi);
+    rt_->PopAxisAlignedClip();
+}
+
 void App::DrawAxis(const Rects& r) {
     Fill(r.axis, pal_.surface);
     StrokeLine(r.axis.left, Px(r.axis.top), r.axis.right, Px(r.axis.top), pal_.hair);
     if (!ds_ || lc_sample_count(ds_) == 0) return;
 
-    const float gutterX = r.plot.left + S(metrics::kNameGutter);
-    const float rightX = r.plot.right - S(metrics::kValueGutter);
+    float gutterX = 0.0f, spanW = 10.0f;
+    PlotSpan(r.plot, gutterX, spanW);
+    const float rightX = gutterX + spanW;
     const bool timeLike = lc_time_kind(ds_) == LC_TIME_CLOCK_MS ||
                           lc_time_kind(ds_) == LC_TIME_DATE_MS;
     const Ticks ticks = MakeTicks(t0_, t1_,
@@ -1107,6 +1409,18 @@ void App::OnButton(ButtonId id) {
             if (!lastPath_.empty()) LoadPath(lastPath_);
             break;
         }
+        case ButtonId::ModeLanes:
+        case ButtonId::ModeOverlay: {
+            const PlotMode want = (id == ButtonId::ModeLanes) ? PlotMode::Lanes
+                                                              : PlotMode::Overlay;
+            if (mode_ == want) break;
+            mode_ = want;
+            scrollPlot_ = 0.0f;
+            break;
+        }
+        case ButtonId::Normalize: normalize_ = !normalize_; break;
+        case ButtonId::ZoomIn:  if (ds_) ZoomAt(ZoomAnchorX(), 0.7); break;
+        case ButtonId::ZoomOut: if (ds_) ZoomAt(ZoomAnchorX(), 1.4); break;
         case ButtonId::Fit: if (ds_) ResetViewToData(); break;
         case ButtonId::ClearCursors: hasA_ = hasB_ = false; break;
         case ButtonId::SelectAll:
@@ -1221,7 +1535,8 @@ void App::OnWheel(float x, float y, int delta, bool ctrl) {
     }
     if (!ds_) return;
 
-    if (ctrl) {
+    // 겹쳐보기는 세로로 스크롤할 것이 없으므로 휠을 바로 확대에 쓴다.
+    if (ctrl || mode_ == PlotMode::Overlay) {
         ZoomAt(x, notches > 0 ? 0.82 : 1.22);
     } else {
         const float maxScroll = (std::max)(0.0f, TotalLaneHeight() -

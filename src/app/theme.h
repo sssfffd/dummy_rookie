@@ -79,6 +79,7 @@ inline Palette DarkPalette() {
 // 96 DPI 기준 치수. 실제 값은 App 이 DPI 배율을 곱해서 쓴다.
 namespace metrics {
 constexpr float kToolbarH = 44.f;
+constexpr float kControlsH = 34.f;   // 보기·배치·확대 컨트롤 줄
 constexpr float kRailW = 292.f;
 constexpr float kAxisH = 28.f;
 constexpr float kStatusH = 26.f;
@@ -87,6 +88,7 @@ constexpr float kLaneState = 34.f;
 constexpr float kLaneAnalog = 58.f;
 constexpr float kNameGutter = 150.f;
 constexpr float kValueGutter = 108.f;
+constexpr float kOverlayAxisW = 72.f;  // 겹쳐보기 세로 눈금 폭
 constexpr float kRowH = 24.f;      // 채널 목록 한 줄
 constexpr float kSearchH = 26.f;
 }  // namespace metrics

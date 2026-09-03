@@ -19,7 +19,8 @@
 | [06](06-vs2017-no-extensions.md) | 2026-09-03 | Visual Studio 2017 지원, VS Code 확장 없이 쓰기 | `95ba55e` |
 | [07](07-build-bat-no-output.md) | 2026-09-03 | `build.bat` 이 아무것도 출력하지 않는 문제 | `970b2d1` |
 | [08](08-reopen-same-file.md) | 2026-09-03 | 한 번 연 엑셀 파일을 다시 못 여는 문제 | `9b2fec0` |
-| [09](09-layout-detection.md) | 2026-09-03 | C4146 오류, 열이 IO 채널인 배치, 시트 중간에서 시작하는 표 | (이 커밋) |
+| [09](09-layout-detection.md) | 2026-09-03 | C4146 오류, 열이 IO 채널인 배치, 시트 중간에서 시작하는 표 | `9f456a7` |
+| [10](10-overlay-graph-and-names.md) | 2026-09-03 | 시간-값 그래프(겹쳐보기), IO 선택·확대, 엑셀 IO 이름 살리기 | (이 커밋) |
 
 ## 규칙
 

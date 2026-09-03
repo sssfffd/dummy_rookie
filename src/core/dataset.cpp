@@ -278,6 +278,45 @@ Layout dense_block_fallback(const Grid& g) {
     return lay;
 }
 
+
+// 이 배치를 택했을 때 채널 이름이 실제로 채워지는 비율.
+//
+// 길이만으로는 부족하다. 샘플이 몇 개 안 되는 시트에서는 데이터 줄이 우연히
+// 증가 순서가 되어 시간축과 길이가 같아진다. 그때 잘못된 쪽을 택하면 이름 줄이
+// 통째로 빈 칸이 되어 채널 이름이 전부 IO_1, IO_2 ... 로 나온다. 실제로 겪은
+// 증상이라, 이름이 붙는지를 길이보다 먼저 본다.
+double name_ratio_rows(const Grid& g, size_t header_row, size_t start_col) {
+    if (start_col == 0) return 0.0;
+    const size_t name_col = start_col - 1;
+    size_t total = 0, named = 0;
+    for (size_t r = header_row + 1; r < g.size(); ++r) {
+        if (!row_has_content(g[r])) continue;
+        ++total;
+        const Cell* c = cell_at(g[r], name_col);
+        if (c && !c->empty()) ++named;
+    }
+    return total ? static_cast<double>(named) / static_cast<double>(total) : 0.0;
+}
+
+double name_ratio_cols(const Grid& g, size_t width, size_t time_col, size_t start_row) {
+    if (start_row == 0 || start_row - 1 >= g.size()) return 0.0;
+    const Row& name_row = g[start_row - 1];
+    size_t total = 0, named = 0;
+    for (size_t c = time_col + 1; c < width; ++c) {
+        // 그 열에 값이 하나라도 있어야 채널로 센다
+        bool has_value = false;
+        for (size_t r = start_row; r < g.size() && !has_value; ++r) {
+            const Cell* cell = cell_at(g[r], c);
+            has_value = cell && !cell->empty();
+        }
+        if (!has_value) continue;
+        ++total;
+        const Cell* n = cell_at(name_row, c);
+        if (n && !n->empty()) ++named;
+    }
+    return total ? static_cast<double>(named) / static_cast<double>(total) : 0.0;
+}
+
 Layout detect_layout(const Grid& g, uint32_t requested) {
     Layout lay;
     const size_t width = grid_width(g);
@@ -333,8 +372,21 @@ Layout detect_layout(const Grid& g, uint32_t requested) {
     } else if (requested == LC_ORIENT_COLS) {
         choice = col_pick.valid() ? LC_ORIENT_COLS : LC_ORIENT_AUTO;
     } else if (row_pick.valid() || col_pick.valid()) {
-        // 더 긴 쪽이 시간축이다. 같으면 행 배치를 택한다.
-        choice = (col_pick.length > row_pick.length) ? LC_ORIENT_COLS : LC_ORIENT_ROWS;
+        const double rows_named = row_pick.valid()
+                                      ? name_ratio_rows(g, row_pick.line, row_pick.start)
+                                      : -1.0;
+        const double cols_named = col_pick.valid()
+                                      ? name_ratio_cols(g, width, col_pick.line, col_pick.start)
+                                      : -1.0;
+        // 이름이 붙는 쪽을 먼저 본다. 한쪽만 이름이 제대로 채워지면 길이와
+        // 무관하게 그쪽이다. 둘 다 비슷하면 시간축이 더 긴 쪽을 택한다.
+        if (rows_named >= 0.5 && cols_named < 0.5) {
+            choice = LC_ORIENT_ROWS;
+        } else if (cols_named >= 0.5 && rows_named < 0.5) {
+            choice = LC_ORIENT_COLS;
+        } else {
+            choice = (col_pick.length > row_pick.length) ? LC_ORIENT_COLS : LC_ORIENT_ROWS;
+        }
     }
 
     if (choice == LC_ORIENT_ROWS) {
@@ -450,7 +502,7 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
     out.channels.clear();
     out.channels.reserve(grid.size() - 1);
 
-    size_t skipped = 0;
+    size_t skipped = 0, unnamed = 0;
     for (size_t r = 1; r < grid.size(); ++r) {
         const Row& row = grid[r];
         bool any_value = false;
@@ -471,7 +523,10 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
                 if (len > 0) ch.name.assign(buf, static_cast<size_t>(len));
             }
         }
-        if (ch.name.empty()) ch.name = L"IO_" + to_wstr(out.channels.size() + 1);
+        if (ch.name.empty()) {
+            ch.name = L"IO_" + to_wstr(out.channels.size() + 1);
+            ++unnamed;
+        }
 
         ch.values.assign(n, kNaN);
         std::unordered_map<std::wstring, uint32_t> state_ids;
@@ -538,6 +593,12 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
     if (out.channels.empty()) return LC_ERR_NO_DATA;
     if (skipped > 0) {
         out.add_note(L"값이 없는 행 " + to_wstr(skipped) + L"개를 건너뛰었습니다.");
+    }
+    if (unnamed > 0) {
+        // 조용히 IO_n 을 붙이면, 원래 이름이 없는 것인지 배치를 잘못 읽은 것인지
+        // 구분할 수가 없다. 숫자를 보여 주면 사용자가 판단할 수 있다.
+        out.add_note(L"이름 칸이 비어 있어 채널 " + to_wstr(unnamed) +
+                     L"개에 임시 이름(IO_n)을 붙였습니다. 배치가 맞는지 확인해 보세요.");
     }
     return LC_OK;
 }
