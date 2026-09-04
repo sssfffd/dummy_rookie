@@ -1,7 +1,7 @@
 # 14 · 겹침 전수 정리, 화살표 버튼 라벨, 완만한 확대, 세로 눈금 고정
 
 - **날짜** 2026-09-04
-- **커밋** 이 커밋
+- **커밋** [`5145387`](../../../commit/5145387) Wrap the control row, label the arrows, soften zoom, hold the Y scale
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `src/app/theme.h`, `README.md`
 
 ## 요청

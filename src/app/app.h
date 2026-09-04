@@ -45,7 +45,9 @@ enum class ButtonId {
     FilterChanged,
     GroupsExpand, GroupsCollapse,
     AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger,
-    YFitVisible, CancelLoad
+    YFitVisible, CancelLoad,
+    MetricSamples, MetricTimeFrac, MetricPeak, MetricMean, MetricRms, MetricArea, MetricRuns,
+    ToleranceCycle
 };
 
 // 파일 읽기는 별도 스레드에서 한다. UI 스레드에서 하면 큰 파일에서 창이 통째로
@@ -69,6 +71,33 @@ enum class PlotMode { Lanes, Overlay };
 //   Both — 이전과 이후를 겹쳐 그린다. 무엇이 어떻게 달라졌는지 눈으로 본다.
 //   Diff — 이후에서 이전을 뺀 값만 그린다. 달라진 구간만 도드라진다.
 enum class CompareMode { Both, Diff };
+
+// 두 로그의 차이를 무엇으로 재는가.
+//
+// 처음에는 "다른 샘플 수" 하나만 있었는데, +1/−1 이 빠르게 오가는 진동이 있으면
+// 샘플마다 카운트가 올라가서 실제로는 사소한 차이가 가장 큰 값으로 보인다.
+// 성질이 다른 척도를 함께 두고 고를 수 있게 한다.
+enum class DiffMetric {
+    Samples,   // 다른 샘플 수. 얼마나 자주 어긋났는가
+    TimeFrac,  // 다른 시간 비율(%). 샘플 수가 다른 로그끼리도 견줄 수 있다
+    Peak,      // 최대 |Δ|. 진동 폭이 작으면 작게 나온다 — 진동에 가장 둔감
+    Mean,      // 평균 |Δ|. 전체적으로 얼마나 벌어졌는가
+    Rms,       // RMS. 큰 차이에 더 무게를 준다
+    Area,      // ∫|Δ|dt. 시간으로 가중 — 짧은 진동은 작게 남는다
+    Runs       // 다른 구간의 개수. 값이 크면 한 번의 변화가 아니라 진동이다
+};
+
+// 채널 하나에 대한 차이 통계. 한 번 훑으면서 모두 채운다.
+struct DiffStats {
+    uint32_t samples = 0;
+    uint32_t runs = 0;
+    double timeFrac = 0.0;   // 0..1
+    double peak = 0.0;
+    double mean = 0.0;
+    double rms = 0.0;
+    double area = 0.0;
+    bool matched = false;    // 이후 로그에 짝이 있는가
+};
 
 // 겹쳐보기에서 한 번에 그릴 수 있는 채널 수. 범주형 색이 여덟 개까지만
 // 서로 구분되므로 그 이상은 색으로 구별이 안 된다.
@@ -145,7 +174,10 @@ private:
     // 이전 로그의 시간 격자를 따라가며 이후 로그(또는 차이)를 그린다.
     void DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
                        double lo, double hi, const D2D1_COLOR_F& color, bool diff,
-                       float thickness, bool dashed);
+                       float thickness);
+    // 이전과 이후 사이를 옅게 칠해 벌어진 만큼을 면적으로 보여 준다.
+    void DrawDifferenceBand(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
+                            double lo, double hi, const D2D1_COLOR_F& color);
     // 겹쳐보기용: 하나의 세로 눈금 위에 채널 하나를 그린다.
     void DrawSeries(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
                     double lo, double hi, const D2D1_COLOR_F& color);
@@ -180,6 +212,10 @@ private:
     // 이후 - 이전. 상태 채널은 값이 다르면 1, 같으면 0.
     double DiffValueAt(uint32_t ch, double t) const;
     bool ChannelDiffers(uint32_t ch) const;
+    // 지금 고른 척도로 잰 값과, 목록에 넣을 짧은 표시
+    double MetricValue(uint32_t ch) const;
+    std::wstring MetricBadge(uint32_t ch) const;
+    const wchar_t* MetricName() const;
     void ResetViewToData();
     void ClampView(double a, double b);
     float ZoomAnchorX() const;
@@ -245,8 +281,6 @@ private:
     Ptr<ID2D1HwndRenderTarget> rt_;
     Ptr<ID2D1SolidColorBrush> brush_;
     Ptr<IDWriteTextFormat> fUi_, fUiCenter_, fMono_, fMonoRight_, fSmall_, fSmallRight_, fTitle_;
-    // 이후 로그를 점선으로 그려 겹쳐도 구분되게 한다.
-    Ptr<ID2D1StrokeStyle> dashStyle_;
 
     std::shared_ptr<LoadJob> loadJob_;
     std::thread loadThread_;
@@ -259,7 +293,11 @@ private:
     LcDataset* dsB_ = nullptr;         // 이후 로그
     std::wstring fileNameB_;
     std::vector<int32_t> matchB_;      // 이전 채널 -> 이후 채널 (없으면 -1)
-    std::vector<uint32_t> diffCount_;  // 채널마다 값이 다른 샘플 수
+    std::vector<uint32_t> diffCount_;  // 채널마다 값이 다른 샘플 수 (호환용)
+    std::vector<DiffStats> diffStats_;
+    DiffMetric metric_ = DiffMetric::Peak;
+    // 값 범위 대비 이 비율보다 작은 차이는 같다고 본다. 진동을 걸러내는 손잡이.
+    double tolerance_ = 0.001;
     std::vector<double> cmpLo_, cmpHi_;    // 이전·이후를 함께 담는 값 범위
     std::vector<double> diffLo_, diffHi_;  // 차이 값의 범위
     CompareMode compareMode_ = CompareMode::Both;

@@ -44,6 +44,15 @@ struct Path {
         sink->BeginFigure(D2D1::Point2F(x, y), D2D1_FIGURE_BEGIN_HOLLOW);
         figure = true;
     }
+    void MoveFilled(float x, float y) {
+        if (figure) sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink->BeginFigure(D2D1::Point2F(x, y), D2D1_FIGURE_BEGIN_FILLED);
+        figure = true;
+    }
+    bool EndClosed() {
+        if (figure) { sink->EndFigure(D2D1_FIGURE_END_CLOSED); figure = false; }
+        return SUCCEEDED(sink->Close());
+    }
     void Line(float x, float y) {
         if (figure) sink->AddLine(D2D1::Point2F(x, y));
     }
@@ -275,14 +284,6 @@ bool App::CreateDeviceResources() {
                                             D2D1::HwndRenderTargetProperties(hwnd_, size),
                                             rt_.put()))) {
         return false;
-    }
-    if (!dashStyle_) {
-        // 이후 로그를 점선으로. 값이 같은 구간에서 두 선이 포개져도 구분된다.
-        const D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
-            D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
-            D2D1_LINE_JOIN_MITER, 10.0f, D2D1_DASH_STYLE_CUSTOM, 0.0f);
-        const float dashes[] = {3.0f, 2.5f};
-        (void)d2d_->CreateStrokeStyle(props, dashes, ARRAYSIZE(dashes), dashStyle_.put());
     }
     return SUCCEEDED(rt_->CreateSolidColorBrush(pal_.ink, brush_.put()));
 }
@@ -665,6 +666,7 @@ void App::RebuildComparison() {
     const uint32_t n = ds_ ? lc_channel_count(ds_) : 0u;
     matchB_.assign(n, -1);
     diffCount_.assign(n, 0u);
+    diffStats_.assign(n, DiffStats{});
     cmpLo_.assign(n, 0.0);
     cmpHi_.assign(n, 1.0);
     diffLo_.assign(n, 0.0);
@@ -673,6 +675,7 @@ void App::RebuildComparison() {
 
     const double* ta = lc_times(ds_);
     const uint32_t samples = lc_sample_count(ds_);
+    const double totalSpan = (samples > 1) ? (ta[samples - 1] - ta[0]) : 0.0;
     uint32_t matched = 0, changed = 0;
 
     for (uint32_t ch = 0; ch < n; ++ch) {
@@ -682,15 +685,20 @@ void App::RebuildComparison() {
         cmpHi_[ch] = lc_channel_max(ds_, ch);
         if (b < 0) continue;
         ++matched;
+        DiffStats& st = diffStats_[ch];
+        st.matched = true;
 
-        // 아날로그는 값이 딱 떨어지지 않는다. 범위의 1/1000 을 넘게 벌어졌을
-        // 때만 "달라졌다"고 센다. 그러지 않으면 반올림 차이까지 전부 잡힌다.
+        // 값 범위 대비 허용 오차. 아날로그는 반올림 차이가 늘 있으므로 그대로
+        // 세면 전부 "달라짐" 이 된다. 디지털·상태는 정확히 비교한다.
         const bool analog = lc_channel_type(ds_, ch) == LC_CH_ANALOG;
         const double span = lc_channel_max(ds_, ch) - lc_channel_min(ds_, ch);
-        const double tol = analog ? (std::max)(std::fabs(span) * 1e-3, 1e-9) : 0.0;
+        const double tol = analog ? (std::max)(std::fabs(span) * tolerance_, 1e-12) : 0.0;
 
         double dlo = std::numeric_limits<double>::infinity();
         double dhi = -std::numeric_limits<double>::infinity();
+        double sumAbs = 0.0, sumSq = 0.0, area = 0.0, diffTime = 0.0;
+        uint32_t counted = 0;
+        bool prevDiffer = false;
         const double* av = lc_channel_values(ds_, ch);
 
         for (uint32_t i = 0; i < samples; ++i) {
@@ -700,34 +708,62 @@ void App::RebuildComparison() {
                 cmpHi_[ch] = (std::max)(cmpHi_[ch], bv);
             }
             const double d = DiffValueAt(ch, ta[i]);
-            if (!std::isfinite(d)) continue;
+            if (!std::isfinite(d)) { prevDiffer = false; continue; }
             dlo = (std::min)(dlo, d);
             dhi = (std::max)(dhi, d);
-            if (std::fabs(d) > tol) ++diffCount_[ch];
+
+            const double ad = std::fabs(d);
+            ++counted;
+            sumAbs += ad;
+            sumSq += ad * ad;
+
+            // 이 샘플이 대표하는 시간 폭 (사다리꼴처럼 앞뒤 절반씩)
+            const double left = (i > 0) ? (ta[i] - ta[i - 1]) * 0.5 : 0.0;
+            const double right = (i + 1 < samples) ? (ta[i + 1] - ta[i]) * 0.5 : 0.0;
+            const double width = left + right;
+            area += ad * width;
+
+            const bool differ = ad > tol;
+            if (differ) {
+                ++st.samples;
+                diffTime += width;
+                if (!prevDiffer) ++st.runs;
+                st.peak = (std::max)(st.peak, ad);
+            }
+            prevDiffer = differ;
             (void)av;
         }
+
+        if (counted > 0) {
+            st.mean = sumAbs / counted;
+            st.rms = std::sqrt(sumSq / counted);
+        }
+        st.area = area;
+        st.timeFrac = (totalSpan > 0.0) ? (diffTime / totalSpan) : 0.0;
+        diffCount_[ch] = st.samples;
+
         if (std::isfinite(dlo) && std::isfinite(dhi)) {
             if (dhi <= dlo) { dlo -= 0.5; dhi += 0.5; }
             diffLo_[ch] = dlo;
             diffHi_[ch] = dhi;
         }
-        if (diffCount_[ch] > 0) ++changed;
+        if (st.samples > 0) ++changed;
     }
 
     // 이후 로그에만 있는 채널 (새로 생긴 IO). 이전 로그에 짝이 없어 그릴 수는
     // 없지만, 무엇이 새로 생겼는지는 두 로그를 견줄 때 꼭 알아야 한다.
     extraB_.clear();
     const uint32_t nb = lc_channel_count(dsB_);
-    for (uint32_t b = 0; b < nb; ++b) {
-        if (lc_find_channel(ds_, lc_channel_name(dsB_, b)) < 0) extraB_.push_back(b);
+    for (uint32_t bx = 0; bx < nb; ++bx) {
+        if (lc_find_channel(ds_, lc_channel_name(dsB_, bx)) < 0) extraB_.push_back(bx);
     }
     const uint32_t removed = n - matched;
 
     compareSummary_ =
         Fmt(L"이후 로그 %s · 이름이 맞은 채널 %u/%u · 값이 달라진 채널 %u · "
-            L"이전에만 있음 %u · 이후에만 있음 %u",
+            L"이전에만 있음 %u · 이후에만 있음 %u · 차이 기준 %s · 허용 오차 %.1f%%",
             fileNameB_.c_str(), matched, n, changed, removed,
-            static_cast<uint32_t>(extraB_.size()));
+            static_cast<uint32_t>(extraB_.size()), MetricName(), tolerance_ * 100.0);
     if (compareOffset_ != 0.0) {
         compareSummary_ += L" · 시간 보정 " + FormatSpan(std::fabs(compareOffset_)) +
                            (compareOffset_ < 0 ? L" 당김" : L" 밀음");
@@ -742,9 +778,53 @@ void App::RebuildComparison() {
     }
 }
 
+const wchar_t* App::MetricName() const {
+    switch (metric_) {
+        case DiffMetric::Samples:  return L"다른 샘플 수";
+        case DiffMetric::TimeFrac: return L"다른 시간 비율";
+        case DiffMetric::Peak:     return L"최대 차이";
+        case DiffMetric::Mean:     return L"평균 차이";
+        case DiffMetric::Rms:      return L"RMS 차이";
+        case DiffMetric::Area:     return L"차이 면적";
+        case DiffMetric::Runs:     return L"다른 구간 수";
+    }
+    return L"";
+}
+
+double App::MetricValue(uint32_t ch) const {
+    if (ch >= diffStats_.size()) return 0.0;
+    const DiffStats& st = diffStats_[ch];
+    switch (metric_) {
+        case DiffMetric::Samples:  return st.samples;
+        case DiffMetric::TimeFrac: return st.timeFrac;
+        case DiffMetric::Peak:     return st.peak;
+        case DiffMetric::Mean:     return st.mean;
+        case DiffMetric::Rms:      return st.rms;
+        case DiffMetric::Area:     return st.area;
+        case DiffMetric::Runs:     return st.runs;
+    }
+    return 0.0;
+}
+
+std::wstring App::MetricBadge(uint32_t ch) const {
+    if (ch >= diffStats_.size() || !diffStats_[ch].matched) return L"삭제";
+    const DiffStats& st = diffStats_[ch];
+    if (st.samples == 0) return L"동일";
+    switch (metric_) {
+        case DiffMetric::Samples:  return Fmt(L"Δ%u", st.samples);
+        case DiffMetric::TimeFrac: return Fmt(L"%.1f%%", st.timeFrac * 100.0);
+        case DiffMetric::Peak:     return L"↕" + FormatNumber(st.peak);
+        case DiffMetric::Mean:     return L"평균 " + FormatNumber(st.mean);
+        case DiffMetric::Rms:      return L"RMS " + FormatNumber(st.rms);
+        case DiffMetric::Area:     return L"∫ " + FormatNumber(st.area);
+        case DiffMetric::Runs:     return Fmt(L"%u구간", st.runs);
+    }
+    return L"";
+}
+
 
 // ===========================================================================
-// 왼쪽 목록 — 10개씩 묶은 그룹, Shift/Ctrl 선택
+// 왼쪽 목록 — 10개씩 묶은 그룹, Shift 범위 선택
 // ===========================================================================
 
 void App::GroupCounts(uint32_t group, uint32_t& visible, uint32_t& selected) const {
@@ -786,7 +866,7 @@ void App::RebuildRailRows() {
     for (uint32_t g = 0; g < groups; ++g) {
         uint32_t visible = 0, selected = 0;
         GroupCounts(g, visible, selected);
-        if (visible == 0) continue;   // 필터에 걸리는 채널이 하나도 없는 그룹은 숨긴다
+        if (visible == 0) continue;   // 필터에 걸리는 채널이 없는 그룹은 숨긴다
         railRows_.push_back({RailRow::Kind::Group, g});
         if (!groupOpen_[g]) continue;
         const uint32_t first = g * kGroupSize;
@@ -924,9 +1004,66 @@ void App::AutoAlignCompare() {
     messageIsError_ = false;
 }
 
+void App::DrawDifferenceBand(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
+                             double lo, double hi, const D2D1_COLOR_F& color) {
+    if (!dsB_ || !(hi > lo)) return;
+    const double* t = lc_times(ds_);
+    const double* av = lc_channel_values(ds_, ch);
+    if (!t || !av) return;
+    int i0 = 0, i1 = 0;
+    IndexRange(i0, i1);
+    if (i0 < 0 || i1 < i0) return;
+
+    auto yOf = [&](double val) {
+        return bottom - static_cast<float>((val - lo) / (hi - lo)) * (bottom - top);
+    };
+    const bool step = lc_channel_type(ds_, ch) != LC_CH_ANALOG;
+
+    // 두 값이 모두 있는 구간을 이어서 하나의 닫힌 도형으로 만든다.
+    // 위쪽은 이전 로그를 따라가고, 아래쪽은 이후 로그를 거꾸로 되짚는다.
+    std::vector<D2D1_POINT_2F> fwd, back;
+    Path p;
+    if (!p.Begin(d2d_.get())) return;
+    bool any = false;
+
+    auto flush = [&]() {
+        if (fwd.size() < 2) { fwd.clear(); back.clear(); return; }
+        p.MoveFilled(fwd[0].x, fwd[0].y);
+        for (size_t k = 1; k < fwd.size(); ++k) p.Line(fwd[k].x, fwd[k].y);
+        for (size_t k = back.size(); k-- > 0;) p.Line(back[k].x, back[k].y);
+        any = true;
+        fwd.clear();
+        back.clear();
+    };
+
+    float lastA = 0.0f, lastB = 0.0f;
+    bool open = false;
+    for (int i = i0; i <= i1; ++i) {
+        const double a = av[i];
+        const double b = CompareValueAt(ch, t[i]);
+        if (!std::isfinite(a) || !std::isfinite(b)) { flush(); open = false; continue; }
+        const float x = XOfTime(t[i], plot);
+        const float ya = yOf(a), yb = yOf(b);
+        if (open && step) {
+            fwd.push_back(D2D1::Point2F(x, lastA));
+            back.push_back(D2D1::Point2F(x, lastB));
+        }
+        fwd.push_back(D2D1::Point2F(x, ya));
+        back.push_back(D2D1::Point2F(x, yb));
+        lastA = ya;
+        lastB = yb;
+        open = true;
+    }
+    flush();
+    if (!p.EndClosed() || !any) return;
+
+    brush_->SetColor(D2D1::ColorF(color.r, color.g, color.b, 0.22f));
+    rt_->FillGeometry(p.geo.get(), brush_.get());
+}
+
 void App::DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
                         double lo, double hi, const D2D1_COLOR_F& color, bool diff,
-                        float thickness, bool dashed) {
+                        float thickness) {
     if (!dsB_ || !(hi > lo)) return;
     const double* t = lc_times(ds_);
     if (!t) return;
@@ -955,8 +1092,7 @@ void App::DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float b
     }
     if (!p.End()) return;
     brush_->SetColor(color);
-    rt_->DrawGeometry(p.geo.get(), brush_.get(), thickness,
-                      dashed ? dashStyle_.get() : nullptr);
+    rt_->DrawGeometry(p.geo.get(), brush_.get(), thickness);
 }
 
 void App::ResetViewToData() {
@@ -1251,6 +1387,17 @@ void App::RebuildTopButtons(float clientWidth) {
 
         // 화살표만 있으면 무엇을 미는 건지 알 수 없다. 무엇이 어느 쪽으로
         // 움직이는지 글자로 적는다.
+        addLabel(L"차이 기준");
+        addCtl(ButtonId::MetricPeak, L"최대", metric_ == DiffMetric::Peak, S(2.0f));
+        addCtl(ButtonId::MetricMean, L"평균", metric_ == DiffMetric::Mean, S(2.0f));
+        addCtl(ButtonId::MetricRms, L"RMS", metric_ == DiffMetric::Rms, S(2.0f));
+        addCtl(ButtonId::MetricArea, L"면적", metric_ == DiffMetric::Area, S(2.0f));
+        addCtl(ButtonId::MetricTimeFrac, L"시간%", metric_ == DiffMetric::TimeFrac, S(2.0f));
+        addCtl(ButtonId::MetricSamples, L"샘플 수", metric_ == DiffMetric::Samples, S(2.0f));
+        addCtl(ButtonId::MetricRuns, L"구간 수", metric_ == DiffMetric::Runs, S(2.0f));
+        addCtl(ButtonId::ToleranceCycle, Fmt(L"허용 오차 %.1f%%", tolerance_ * 100.0).c_str(),
+               false, S(14.0f));
+
         addLabel(L"이후 로그 시간 맞추기");
         addCtl(ButtonId::AlignLeft, L"◀ 앞당김", false, S(2.0f));
         addCtl(ButtonId::AlignRight, L"뒤로 밀기 ▶", false, S(2.0f));
@@ -1521,7 +1668,7 @@ void App::DrawRail(const Rects& r) {
             rt_->DrawRoundedRectangle(crr, brush_.get(), 1.0f);
         }
 
-        const float tagW = S(48.0f);
+        const float tagW = HasCompare() ? S(76.0f) : S(48.0f);
         const float nameL = cb.right + S(9.0f);
         const float nameR = r.rail.right - tagW - S(12.0f);
         DrawLabel(Ellipsize(dw_.get(), lc_channel_name(ds_, ch), fMono_.get(), nameR - nameL),
@@ -1533,15 +1680,8 @@ void App::DrawRail(const Rects& r) {
         std::wstring tag;
         D2D1_COLOR_F tagColor = pal_.ink3;
         if (HasCompare()) {
-            if (ch >= matchB_.size() || matchB_[ch] < 0) {
-                tag = L"삭제";
-                tagColor = pal_.cursorB;
-            } else if (diffCount_[ch] == 0) {
-                tag = L"동일";
-            } else {
-                tag = Fmt(L"Δ%u", diffCount_[ch]);
-                tagColor = pal_.cursorB;
-            }
+            tag = MetricBadge(ch);
+            if (tag != L"동일") tagColor = pal_.cursorB;
         } else {
             switch (lc_channel_type(ds_, ch)) {
                 case LC_CH_DIGITAL: tag = L"DIG"; break;
@@ -1626,17 +1766,20 @@ void App::DrawLanesView(const Rects& r) {
                 StrokeLine(gutterX, Px(zero), rightX, Px(zero), pal_.axis);
             }
             DrawResampled(ch, r.plot, lane.top + pad, lane.bottom - pad, dlo, dhi,
-                          pal_.accent, true, S(2.0f), false);
+                          pal_.accent, true, S(2.0f));
         } else if (compare) {
             // 두 로그를 같은 눈금에 겹친다. 눈금은 둘을 모두 담는 범위로.
             const double lo = cmpLo_[ch], hi = cmpHi_[ch];
+            // 벌어진 만큼을 먼저 면적으로 칠하고 그 위에 두 선을 실선으로 얹는다.
+            DrawDifferenceBand(ch, r.plot, lane.top + pad, lane.bottom - pad, lo, hi,
+                               pal_.cursorB);
             DrawSeries(ch, r.plot, lane.top + pad, lane.bottom - pad, lo, hi,
                        pal_.accent);
-            // 값이 같은 구간에서는 두 선이 정확히 포개져 하나로 보인다. 점선으로
-            // 그리고, 필요하면 살짝 띄워서 겹쳐도 두 개임을 알 수 있게 한다.
+            // 값이 완전히 같으면 두 선이 포개져 하나로 보인다. 그때만 확인하고
+            // 싶다면 "벌려 그리기" 로 이후 선을 살짝 띄울 수 있다.
             const float shift = stagger_ ? (lane.bottom - lane.top) * 0.10f : 0.0f;
             DrawResampled(ch, r.plot, lane.top + pad + shift, lane.bottom - pad + shift,
-                          lo, hi, pal_.cursorB, false, S(1.8f), true);
+                          lo, hi, pal_.cursorB, false, S(1.8f));
         } else {
             switch (type) {
                 case LC_CH_DIGITAL: DrawLaneDigital(ch, lane, r.plot); break;
@@ -2098,15 +2241,16 @@ void App::DrawOverlayView(const Rects& r) {
     for (uint32_t ch : shown) {
         const D2D1_COLOR_F col = pal_.series[ch % 8];
         if (cmpDiff) {
-            DrawResampled(ch, r.plot, top, bottom, lo, hi, col, true, S(2.0f), false);
+            DrawResampled(ch, r.plot, top, bottom, lo, hi, col, true, S(2.0f));
             continue;
         }
+        if (HasCompare()) DrawDifferenceBand(ch, r.plot, top, bottom, lo, hi, col);
         DrawSeries(ch, r.plot, top, bottom, lo, hi, col);
         if (HasCompare()) {
             // 같은 색을 옅고 얇게 그린다. 색은 채널을 뜻하고, 굵기가 이전/이후를 뜻한다.
             const float shift = stagger_ ? (bottom - top) * 0.02f : 0.0f;
             DrawResampled(ch, r.plot, top + shift, bottom + shift, lo, hi, col, false,
-                          S(1.8f), true);
+                          S(1.4f));
         }
     }
     if (cmpDiff && lo <= 0.0 && hi >= 0.0) {
@@ -2124,8 +2268,9 @@ void App::DrawOverlayView(const Rects& r) {
     if (selected > kMaxOverlay) {
         note = Fmt(L"선택한 %u개 중 앞 %u개만 표시", selected, kMaxOverlay);
     } else if (HasCompare()) {
-        note = (compareMode_ == CompareMode::Diff) ? L"이후 − 이전"
-                                                   : L"실선 = 이전 · 점선 = 이후";
+        note = (compareMode_ == CompareMode::Diff)
+                   ? L"이후 − 이전"
+                   : L"굵은 선 = 이전 · 가는 선 = 이후 · 음영 = 차이";
     }
     float noteL = rightX;
     if (!note.empty()) {
@@ -2260,6 +2405,19 @@ void App::OnButton(ButtonId id) {
         case ButtonId::CompareBoth: compareMode_ = CompareMode::Both; break;
         case ButtonId::CompareDiff: compareMode_ = CompareMode::Diff; break;
         case ButtonId::Stagger: stagger_ = !stagger_; break;
+        case ButtonId::MetricSamples:  metric_ = DiffMetric::Samples; break;
+        case ButtonId::MetricTimeFrac: metric_ = DiffMetric::TimeFrac; break;
+        case ButtonId::MetricPeak:     metric_ = DiffMetric::Peak; break;
+        case ButtonId::MetricMean:     metric_ = DiffMetric::Mean; break;
+        case ButtonId::MetricRms:      metric_ = DiffMetric::Rms; break;
+        case ButtonId::MetricArea:     metric_ = DiffMetric::Area; break;
+        case ButtonId::MetricRuns:     metric_ = DiffMetric::Runs; break;
+        case ButtonId::ToleranceCycle: {
+            // 0.1% -> 1% -> 5% -> 0.1% . 진동을 얼마나 걸러낼지 손으로 정한다.
+            tolerance_ = (tolerance_ < 0.005) ? 0.01 : (tolerance_ < 0.03 ? 0.05 : 0.001);
+            if (dsB_) RebuildComparison();
+            break;
+        }
         case ButtonId::AlignLeft:  NudgeAlign(-1); break;
         case ButtonId::AlignRight: NudgeAlign(1); break;
         case ButtonId::AlignAuto:  AutoAlignCompare(); break;
@@ -2320,6 +2478,26 @@ void App::OnButton(ButtonId id) {
         case ButtonId::FilterState:   filter_ = LC_CH_STATE; scrollRail_ = 0.0f; break;
         case ButtonId::FilterChanged: filter_ = -2; scrollRail_ = 0.0f; break;
         default: break;
+    }
+    // 척도를 바꾸면 값은 이미 계산돼 있으므로 다시 훑을 필요가 없지만, 요약
+    // 문구에 척도 이름이 들어가므로 그 줄만 다시 만든다.
+    if (HasCompare() && !messageIsError_) {
+        const uint32_t n = lc_channel_count(ds_);
+        uint32_t matched = 0, changed = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (i < diffStats_.size() && diffStats_[i].matched) ++matched;
+            if (i < diffStats_.size() && diffStats_[i].samples > 0) ++changed;
+        }
+        compareSummary_ = Fmt(
+            L"이후 로그 %s · 이름이 맞은 채널 %u/%u · 값이 달라진 채널 %u · "
+            L"이전에만 있음 %u · 이후에만 있음 %u · 차이 기준 %s · 허용 오차 %.1f%%",
+            fileNameB_.c_str(), matched, n, changed, n - matched,
+            static_cast<uint32_t>(extraB_.size()), MetricName(), tolerance_ * 100.0);
+        if (compareOffset_ != 0.0) {
+            compareSummary_ += L" · 시간 보정 " + FormatSpan(std::fabs(compareOffset_)) +
+                               (compareOffset_ < 0 ? L" 당김" : L" 밀음");
+        }
+        message_ = compareSummary_;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
