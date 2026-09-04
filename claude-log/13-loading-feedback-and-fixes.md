@@ -1,7 +1,7 @@
 # 13 · 읽는 중 표시(배경 스레드), 레일 겹침 재수정, 클릭 시 기존 선택 유지
 
 - **날짜** 2026-09-04
-- **커밋** 이 커밋
+- **커밋** [`c530a4a`](../../../commit/c530a4a) Load files off the UI thread, fix rail overlap, keep selections on click
 - **바뀐 파일** `src/core/include/logcore/logcore.h`, `src/core/dataset.h`, `src/core/dataset.cpp`, `src/core/csv_reader.cpp`, `src/core/xlsx_reader.cpp`, `src/core/logcore.cpp`, `src/app/app.cpp`, `src/app/app.h`, `README.md`
 
 ## 요청

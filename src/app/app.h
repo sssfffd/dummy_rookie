@@ -45,7 +45,7 @@ enum class ButtonId {
     FilterChanged,
     GroupsExpand, GroupsCollapse,
     AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger,
-    CancelLoad
+    YFitVisible, CancelLoad
 };
 
 // 파일 읽기는 별도 스레드에서 한다. UI 스레드에서 하면 큰 파일에서 창이 통째로
@@ -92,6 +92,7 @@ struct Button {
     std::wstring label;
     bool pressed = false;   // 세그먼트 토글의 선택 상태
     bool accent = false;
+    bool isLabel = false;   // 누를 수 없는 묶음 이름 ("보기", "비교" 등)
 };
 
 struct Rects {
@@ -116,7 +117,10 @@ private:
 
     // ---- 레이아웃 ----
     Rects CalcRects() const;
-    void RebuildButtons(const Rects& r);
+    // 버튼 배치는 두 단계다. 위쪽(툴바 + 컨트롤 줄)은 창 너비만 알면 되고,
+    // 그 결과로 컨트롤 줄 높이가 정해져야 나머지 영역을 계산할 수 있다.
+    void RebuildTopButtons(float clientWidth);
+    void RebuildRailButtons(const Rects& r);
     void LayoutChildren(const Rects& r);
     float LaneHeight(LcChannelType t) const;
     float TotalLaneHeight() const;
@@ -281,6 +285,10 @@ private:
 
     PlotMode mode_ = PlotMode::Lanes;
     bool normalize_ = false;
+    // 세로 눈금을 보이는 구간에 맞출지. 꺼 두면 선택한 채널의 전체 범위로
+    // 고정되어, 시간축을 옮겨도 배율이 갑자기 바뀌지 않는다.
+    bool yFitVisible_ = false;
+    float controlsH_ = 34.0f;   // 줄바꿈 결과로 정해지는 컨트롤 줄 높이 (픽셀)
 
     std::vector<RailRow> railRows_;
     std::vector<bool> groupOpen_;

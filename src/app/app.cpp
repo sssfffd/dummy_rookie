@@ -309,7 +309,7 @@ void App::DiscardDeviceResources() {
 float App::RailHeaderHeight() const {
     float h = S(6.0f) + S(16.0f) + S(metrics::kSearchH) + S(8.0f);
     h += S(22.0f);                          // 칩 1행
-    if (HasCompare()) h += S(24.0f);        // 칩 2행
+    if (HasCompare()) h += S(26.0f);        // 칩 2행 (줄바꿈 여유 포함)
     h += S(6.0f) + S(22.0f) + S(8.0f);      // 선택 줄
     return h;
 }
@@ -323,7 +323,7 @@ Rects App::CalcRects() const {
     Rects r;
     r.toolbar = Rect(0, 0, w, S(metrics::kToolbarH));
     // 버튼이 늘어나 한 줄에 안 들어가므로 보기·확대 컨트롤은 아래 줄로 뺀다.
-    r.controls = Rect(0, r.toolbar.bottom, w, r.toolbar.bottom + S(metrics::kControlsH));
+    r.controls = Rect(0, r.toolbar.bottom, w, r.toolbar.bottom + controlsH_);
     r.status = Rect(0, h - S(metrics::kStatusH), w, h);
     const float railW = (std::min)(S(metrics::kRailW), w * 0.42f);
     r.rail = Rect(0, r.controls.bottom, railW, r.status.top);
@@ -1134,6 +1134,11 @@ void App::DrawLabel(const std::wstring& s, IDWriteTextFormat* fmt, const D2D1_RE
 }
 
 void App::DrawButton(const Button& b, bool hot) {
+    if (b.isLabel) {
+        // 묶음 이름. 버튼처럼 보이면 누를 수 있다고 오해한다.
+        DrawLabel(b.label, fSmall_.get(), b.rect, pal_.ink3);
+        return;
+    }
     const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(b.rect, S(4.0f), S(4.0f));
     if (b.accent || b.pressed) {
         brush_->SetColor(pal_.accent);
@@ -1148,70 +1153,117 @@ void App::DrawButton(const Button& b, bool hot) {
     DrawLabel(b.label, fUiCenter_.get(), b.rect, fg);
 }
 
-void App::RebuildButtons(const Rects& r) {
+void App::RebuildTopButtons(float clientWidth) {
     buttons_.clear();
     const float pad = S(10.0f);
-    const float h = S(26.0f);
-    const float y = r.toolbar.top + (r.toolbar.bottom - r.toolbar.top - h) * 0.5f;
-    float x = pad;
 
-    auto add = [&](ButtonId id, const wchar_t* label, bool accent, bool pressed, float gap) {
+    // ---- 툴바: 파일 열기 ----------------------------------------------------
+    const float h = S(26.0f);
+    const float y = S(metrics::kToolbarH) * 0.5f - h * 0.5f;
+    float x = pad;
+    auto add = [&](ButtonId id, const wchar_t* label, bool accent, float gap) {
         Button b;
         b.id = id;
         b.label = label;
         b.accent = accent;
-        b.pressed = pressed;
         const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(22.0f);
         b.rect = Rect(x, y, x + w, y + h);
         x += w + gap;
         buttons_.push_back(std::move(b));
     };
-
     if (IsLoading()) {
-        add(ButtonId::CancelLoad, L"읽기 취소", false, false, S(14.0f));
+        add(ButtonId::CancelLoad, L"읽기 취소", false, S(14.0f));
     } else {
-        add(ButtonId::Open, L"이전 로그 열기", true, false, S(4.0f));
-        add(ButtonId::OpenCompare, L"이후 로그 열기", false, false, S(4.0f));
-        if (HasCompare()) add(ButtonId::CloseCompare, L"비교 해제", false, false, S(14.0f));
+        add(ButtonId::Open, L"이전 로그 열기", true, S(4.0f));
+        add(ButtonId::OpenCompare, L"이후 로그 열기", false, S(4.0f));
+        if (HasCompare()) add(ButtonId::CloseCompare, L"비교 해제", false, S(14.0f));
     }
 
-    // 아래 컨트롤 줄
+    // ---- 컨트롤 줄: 자리가 모자라면 다음 줄로 넘긴다 --------------------------
+    // 버튼을 한 줄에 밀어 넣던 것이 지금까지 겹침의 주된 원인이었다. 이제는
+    // 넘치면 줄을 바꾸고, 그 결과 줄 수만큼 컨트롤 줄 높이를 늘린다.
     const float ctlH = S(24.0f);
-    const float cy = r.controls.top + (r.controls.bottom - r.controls.top - ctlH) * 0.5f;
+    const float gapY = S(4.0f);
+    const float padY = S(5.0f);
+    const float right = clientWidth - pad;
     float cx = pad;
+    float cy = S(metrics::kToolbarH) + padY;
+    int rows = 1;
+
+    auto place = [&](float w) {
+        if (cx > pad && cx + w > right) {   // 줄 바꿈
+            cx = pad;
+            cy += ctlH + gapY;
+            ++rows;
+        }
+        const D2D1_RECT_F rc = Rect(cx, cy, cx + w, cy + ctlH);
+        cx += w;
+        return rc;
+    };
+    auto addLabel = [&](const wchar_t* text) {
+        Button b;
+        b.id = ButtonId::None;
+        b.isLabel = true;
+        b.label = text;
+        b.rect = place(MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(12.0f));
+        cx += S(2.0f);
+        buttons_.push_back(std::move(b));
+    };
     auto addCtl = [&](ButtonId id, const wchar_t* label, bool pressed, float gap) {
         Button b;
         b.id = id;
         b.label = label;
         b.pressed = pressed;
-        const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(18.0f);
-        b.rect = Rect(cx, cy, cx + w, cy + ctlH);
-        cx += w + gap;
+        b.rect = place(MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(18.0f));
+        cx += gap;
         buttons_.push_back(std::move(b));
     };
+
+    addLabel(L"보기");
     addCtl(ButtonId::ModeLanes, L"레인", mode_ == PlotMode::Lanes, S(2.0f));
-    addCtl(ButtonId::ModeOverlay, L"겹쳐보기", mode_ == PlotMode::Overlay, S(16.0f));
-    if (HasCompare()) {
-        addCtl(ButtonId::CompareBoth, L"이전+이후", compareMode_ == CompareMode::Both, S(2.0f));
-        addCtl(ButtonId::CompareDiff, L"차이 Δ", compareMode_ == CompareMode::Diff, S(12.0f));
-        addCtl(ButtonId::Stagger, L"벌려 그리기", stagger_, S(12.0f));
-        addCtl(ButtonId::AlignLeft, L"◀", false, S(2.0f));
-        addCtl(ButtonId::AlignRight, L"▶", false, S(2.0f));
-        addCtl(ButtonId::AlignAuto, L"자동 정렬", false, S(2.0f));
-        addCtl(ButtonId::AlignReset, L"정렬 해제", false, S(16.0f));
-    }
+    addCtl(ButtonId::ModeOverlay, L"겹쳐보기", mode_ == PlotMode::Overlay, S(14.0f));
+
+    addLabel(L"배치");
     addCtl(ButtonId::OrientAuto, L"자동", orientation_ == LC_ORIENT_AUTO, S(2.0f));
     addCtl(ButtonId::OrientRows, L"행 = IO", orientation_ == LC_ORIENT_ROWS, S(2.0f));
-    addCtl(ButtonId::OrientCols, L"열 = IO", orientation_ == LC_ORIENT_COLS, S(16.0f));
-    if (mode_ == PlotMode::Overlay) {
-        addCtl(ButtonId::Normalize, L"0–1 정규화", normalize_, S(16.0f));
-    }
-    addCtl(ButtonId::ZoomOut, L"—", false, S(2.0f));
-    addCtl(ButtonId::ZoomIn, L"＋", false, S(2.0f));
-    addCtl(ButtonId::Fit, L"전체 보기", false, S(16.0f));
-    addCtl(ButtonId::ClearCursors, L"커서 해제", false, S(2.0f));
+    addCtl(ButtonId::OrientCols, L"열 = IO", orientation_ == LC_ORIENT_COLS, S(14.0f));
 
-    // 레일 안의 버튼들. 위에서 아래로 밴드를 쌓는다 (RailHeaderHeight 와 같은 순서).
+    if (mode_ == PlotMode::Overlay) {
+        // 레인은 채널마다 눈금이 따로라 이 설정이 뜻을 갖지 않는다.
+        addLabel(L"세로 눈금");
+        addCtl(ButtonId::Normalize, L"0–1 정규화", normalize_, S(2.0f));
+        addCtl(ButtonId::YFitVisible, L"보이는 구간에 맞춤", yFitVisible_, S(14.0f));
+    }
+
+    addLabel(L"확대");
+    addCtl(ButtonId::ZoomOut, L"축소 −", false, S(2.0f));
+    addCtl(ButtonId::ZoomIn, L"확대 ＋", false, S(2.0f));
+    addCtl(ButtonId::Fit, L"전체 보기", false, S(14.0f));
+
+    addLabel(L"커서");
+    addCtl(ButtonId::ClearCursors, L"해제", false, S(14.0f));
+
+    if (HasCompare()) {
+        addLabel(L"비교");
+        addCtl(ButtonId::CompareBoth, L"이전+이후", compareMode_ == CompareMode::Both, S(2.0f));
+        addCtl(ButtonId::CompareDiff, L"차이 Δ", compareMode_ == CompareMode::Diff, S(2.0f));
+        addCtl(ButtonId::Stagger, L"벌려 그리기", stagger_, S(14.0f));
+
+        // 화살표만 있으면 무엇을 미는 건지 알 수 없다. 무엇이 어느 쪽으로
+        // 움직이는지 글자로 적는다.
+        addLabel(L"이후 로그 시간 맞추기");
+        addCtl(ButtonId::AlignLeft, L"◀ 앞당김", false, S(2.0f));
+        addCtl(ButtonId::AlignRight, L"뒤로 밀기 ▶", false, S(2.0f));
+        addCtl(ButtonId::AlignAuto, L"자동 정렬", false, S(2.0f));
+        addCtl(ButtonId::AlignReset, L"정렬 해제", false, S(2.0f));
+    }
+
+    controlsH_ = static_cast<float>(rows) * ctlH + static_cast<float>(rows - 1) * gapY +
+                 padY * 2.0f;
+}
+
+void App::RebuildRailButtons(const Rects& r) {
+    const float pad = S(10.0f);
     float ry = r.rail.top + S(6.0f) + S(16.0f) + S(metrics::kSearchH) + S(8.0f);
     const float chipH = S(22.0f);
     float rx = r.rail.left + pad;
@@ -1221,6 +1273,11 @@ void App::RebuildButtons(const Rects& r) {
         b.label = label;
         b.pressed = pressed;
         const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(16.0f);
+        // 레일도 넘치면 줄을 바꾼다.
+        if (rx > r.rail.left + pad && rx + w > r.rail.right - pad) {
+            rx = r.rail.left + pad;
+            ry += chipH + S(4.0f);
+        }
         b.rect = Rect(rx, ry, rx + w, ry + chipH);
         rx += w + S(5.0f);
         buttons_.push_back(std::move(b));
@@ -1229,12 +1286,7 @@ void App::RebuildButtons(const Rects& r) {
     addChip(ButtonId::FilterDigital, L"DIG", filter_ == LC_CH_DIGITAL);
     addChip(ButtonId::FilterAnalog, L"ANA", filter_ == LC_CH_ANALOG);
     addChip(ButtonId::FilterState, L"STATE", filter_ == LC_CH_STATE);
-    if (HasCompare()) {
-        // 줄을 바꾼다. 한 줄에 밀어 넣으면 개수 표시와 겹친다.
-        ry += S(24.0f);
-        rx = r.rail.left + pad;
-        addChip(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
-    }
+    if (HasCompare()) addChip(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
 
     const float sy = ry + chipH + S(6.0f);
     float sx = r.rail.left + pad;
@@ -1256,8 +1308,11 @@ void App::RebuildButtons(const Rects& r) {
 void App::Render() {
     if (!CreateDeviceResources()) return;
 
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    RebuildTopButtons(static_cast<float>(rc.right - rc.left));
     const Rects r = CalcRects();
-    RebuildButtons(r);
+    RebuildRailButtons(r);
     LayoutChildren(r);
 
     rt_->BeginDraw();
@@ -1316,14 +1371,6 @@ void App::DrawControls(const Rects& r) {
             DrawButton(b, hotButton_ == b.id);
         }
     }
-    // 조작법을 눈에 보이는 곳에 둔다. 확대·축소가 있는지 모르면 없는 것과 같다.
-    DrawLabel(mode_ == PlotMode::Overlay
-                  ? L"휠 = 확대·축소 · 드래그 = 이동 · 목록: 클릭/Ctrl+클릭/Shift+클릭"
-                  : L"Ctrl+휠 = 확대·축소 · 휠 = 채널 스크롤 · 목록: 클릭/Ctrl+클릭/Shift+클릭",
-              fSmallRight_.get(),
-              Rect(r.controls.left, r.controls.top, r.controls.right - S(12.0f),
-                   r.controls.bottom),
-              pal_.ink3);
 }
 
 void App::DrawRail(const Rects& r) {
@@ -1837,38 +1884,55 @@ double App::SeriesValue(uint32_t ch, double raw) const {
 }
 
 void App::OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& hi) const {
-    if (normalize_ && !(HasCompare() && compareMode_ == CompareMode::Diff)) {
-        lo = 0.0;
-        hi = 1.0;
-        return;
-    }
+    const bool diff = HasCompare() && compareMode_ == CompareMode::Diff;
+    if (normalize_ && !diff) { lo = 0.0; hi = 1.0; return; }
+
     lo = std::numeric_limits<double>::infinity();
     hi = -std::numeric_limits<double>::infinity();
 
-    // 지금 화면에 보이는 시간 구간만 본다. 확대하면 세로 눈금도 같이 좁혀져서
-    // 작은 흔들림을 볼 수 있다.
+    // 어느 구간의 값을 볼지.
+    //
+    // 보이는 구간에만 맞추면 시간축을 조금만 옮겨도 세로 배율이 통째로 바뀐다.
+    // 확대해 놓고 뒤로 넘기면 배율이 풀린 것처럼 보여서 쓰기가 어렵다. 그래서
+    // 기본은 선택한 채널의 전체 범위로 고정하고, 보이는 구간에 맞추는 동작은
+    // 버튼으로 켤 때만 쓴다.
     int i0 = 0, i1 = 0;
-    IndexRange(i0, i1);
     const double* t = lc_times(ds_);
+    const uint32_t n = lc_sample_count(ds_);
+    if (yFitVisible_) {
+        IndexRange(i0, i1);
+    } else {
+        i0 = 0;
+        i1 = static_cast<int>(n) - 1;
+    }
     if (!t || i0 < 0 || i1 < i0) { lo = 0.0; hi = 1.0; return; }
 
-    const bool diff = HasCompare() && compareMode_ == CompareMode::Diff;
     for (uint32_t ch : shown) {
         const double* v = lc_channel_values(ds_, ch);
         if (!v) continue;
-        for (int i = i0; i <= i1; ++i) {
-            if (diff) {
+        if (diff) {
+            for (int i = i0; i <= i1; ++i) {
                 const double d = DiffValueAt(ch, t[i]);
                 if (!std::isfinite(d)) continue;
                 lo = (std::min)(lo, d);
                 hi = (std::max)(hi, d);
-                continue;
             }
+            continue;
+        }
+        // 전체 범위라면 채널이 이미 들고 있는 최소·최대를 쓰면 된다. 샘플을
+        // 다시 훑을 이유가 없다.
+        if (!yFitVisible_) {
+            lo = (std::min)(lo, HasCompare() && ch < cmpLo_.size() ? cmpLo_[ch]
+                                                                   : lc_channel_min(ds_, ch));
+            hi = (std::max)(hi, HasCompare() && ch < cmpHi_.size() ? cmpHi_[ch]
+                                                                   : lc_channel_max(ds_, ch));
+            continue;
+        }
+        for (int i = i0; i <= i1; ++i) {
             if (std::isfinite(v[i])) {
                 lo = (std::min)(lo, v[i]);
                 hi = (std::max)(hi, v[i]);
             }
-            // 비교 중이면 이후 로그의 값도 눈금에 들어와야 한다.
             if (HasCompare()) {
                 const double b = CompareValueAt(ch, t[i]);
                 if (std::isfinite(b)) {
@@ -2051,12 +2115,31 @@ void App::DrawOverlayView(const Rects& r) {
     }
     rt_->PopAxisAlignedClip();
 
-    // 범례
+    // 범례. 오른쪽에 붙는 안내를 먼저 재서 자리를 확보한 뒤, 남는 폭에만
+    // 채널 이름을 채운다. 순서를 바꾸면 이름이 안내 글자 위로 넘어간다.
+    uint32_t selected = 0;
+    for (bool b : selected_) selected += b ? 1u : 0u;
+
+    std::wstring note;
+    if (selected > kMaxOverlay) {
+        note = Fmt(L"선택한 %u개 중 앞 %u개만 표시", selected, kMaxOverlay);
+    } else if (HasCompare()) {
+        note = (compareMode_ == CompareMode::Diff) ? L"이후 − 이전"
+                                                   : L"실선 = 이전 · 점선 = 이후";
+    }
+    float noteL = rightX;
+    if (!note.empty()) {
+        const float w = MeasureText(dw_.get(), note, fSmallRight_.get()) + S(12.0f);
+        noteL = rightX - w;
+        DrawLabel(note, fSmallRight_.get(),
+                  Rect(noteL, r.plot.top, rightX, r.plot.top + legendH), pal_.ink3);
+    }
+
     float lx = gutterX;
     for (uint32_t ch : shown) {
         const std::wstring name = lc_channel_name(ds_, ch);
         const float w = MeasureText(dw_.get(), name, fMono_.get());
-        if (lx + w + S(30.0f) > rightX) break;
+        if (lx + w + S(30.0f) > noteL) break;
         const D2D1_RECT_F swatch = Rect(lx, r.plot.top + legendH * 0.5f - S(2.0f),
                                         lx + S(14.0f), r.plot.top + legendH * 0.5f + S(1.5f));
         Fill(swatch, pal_.series[ch % 8]);
@@ -2065,23 +2148,6 @@ void App::DrawOverlayView(const Rects& r) {
                        r.plot.top + legendH),
                   pal_.ink2);
         lx = swatch.right + S(6.0f) + w + S(18.0f);
-    }
-
-    if (HasCompare()) {
-        DrawLabel(compareMode_ == CompareMode::Diff
-                      ? L"이후 − 이전"
-                      : L"실선 = 이전 · 점선 = 이후",
-                  fSmall_.get(),
-                  Rect(lx, r.plot.top, lx + S(220.0f), r.plot.top + legendH), pal_.ink3);
-    }
-
-    uint32_t selected = 0;
-    for (bool b : selected_) selected += b ? 1u : 0u;
-    if (selected > kMaxOverlay) {
-        DrawLabel(Fmt(L"선택한 %u개 중 앞 %u개만 표시합니다", selected, kMaxOverlay),
-                  fSmallRight_.get(),
-                  Rect(rightX - S(240.0f), r.plot.top, rightX, r.plot.top + legendH),
-                  pal_.ink3);
     }
 
     // 커서
@@ -2144,22 +2210,34 @@ void App::DrawStatus(const Rects& r) {
     Fill(r.status, pal_.panel);
     StrokeLine(r.status.left, Px(r.status.top), r.status.right, Px(r.status.top), pal_.hair);
 
-    const std::wstring left = message_.empty()
-        ? std::wstring(L"클릭 = 커서 A · Shift+클릭 = 커서 B · 드래그 = 이동 · Ctrl+휠 = 확대 · 더블클릭 = 전체 보기")
-        : message_;
-    DrawLabel(Ellipsize(dw_.get(), left, fUi_.get(), (r.status.right - r.status.left) * 0.62f),
-              fUi_.get(), Rect(r.status.left + S(10.0f), r.status.top, r.status.right,
-                               r.status.bottom),
-              messageIsError_ ? pal_.cursorB : pal_.ink3);
-
+    // 오른쪽 커서 판독을 먼저 그리고, 왼쪽 글은 남는 폭에 맞춰 잘라낸다.
+    // 두 글이 같은 줄에 있으므로 순서를 지키지 않으면 겹친다.
     std::wstring right;
     if (hasA_) right += L"A " + FormatTime(curA_, 0.0);
     if (hasB_) right += (right.empty() ? L"" : L"    ") + std::wstring(L"B ") + FormatTime(curB_, 0.0);
     if (hasA_ && hasB_) right += L"    Δt " + FormatSpan(std::fabs(curB_ - curA_));
+
+    float rightW = 0.0f;
     if (!right.empty()) {
+        rightW = MeasureText(dw_.get(), right, fMonoRight_.get()) + S(20.0f);
         DrawLabel(right, fMonoRight_.get(),
-                  Rect(r.status.left, r.status.top, r.status.right - S(12.0f), r.status.bottom),
+                  Rect(r.status.right - rightW, r.status.top, r.status.right - S(12.0f),
+                       r.status.bottom),
                   pal_.ink);
+    }
+
+    const std::wstring left =
+        message_.empty()
+            ? std::wstring(mode_ == PlotMode::Overlay
+                               ? L"휠 = 확대·축소 · 드래그 = 이동 · 클릭 = 커서 A · Shift+클릭 = 커서 B"
+                               : L"Ctrl+휠 = 확대·축소 · 휠 = 채널 스크롤 · 드래그 = 이동")
+            : message_;
+    const float leftL = r.status.left + S(10.0f);
+    const float avail = (r.status.right - rightW) - leftL - S(8.0f);
+    if (avail > S(40.0f)) {
+        DrawLabel(Ellipsize(dw_.get(), left, fUi_.get(), avail), fUi_.get(),
+                  Rect(leftL, r.status.top, leftL + avail, r.status.bottom),
+                  messageIsError_ ? pal_.cursorB : pal_.ink3);
     }
 }
 
@@ -2212,8 +2290,9 @@ void App::OnButton(ButtonId id) {
             break;
         }
         case ButtonId::Normalize: normalize_ = !normalize_; break;
-        case ButtonId::ZoomIn:  if (ds_) ZoomAt(ZoomAnchorX(), 0.7); break;
-        case ButtonId::ZoomOut: if (ds_) ZoomAt(ZoomAnchorX(), 1.4); break;
+        case ButtonId::ZoomIn:  if (ds_) ZoomAt(ZoomAnchorX(), 0.75); break;
+        case ButtonId::ZoomOut: if (ds_) ZoomAt(ZoomAnchorX(), 1.0 / 0.75); break;
+        case ButtonId::YFitVisible: yFitVisible_ = !yFitVisible_; break;
         case ButtonId::Fit: if (ds_) ResetViewToData(); break;
         case ButtonId::ClearCursors: hasA_ = hasB_ = false; break;
         case ButtonId::SelectAll:
@@ -2248,7 +2327,10 @@ void App::OnButton(ButtonId id) {
 void App::OnLButtonDown(float x, float y, bool shift) {
     SetFocus(hwnd_);
     for (const Button& b : buttons_) {
-        if (Inside(b.rect, x, y)) { OnButton(b.id); return; }
+        if (!b.isLabel && b.id != ButtonId::None && Inside(b.rect, x, y)) {
+            OnButton(b.id);
+            return;
+        }
     }
 
     const Rects r = CalcRects();
@@ -2329,7 +2411,10 @@ void App::OnMouseMove(float x, float y, bool /*dragging*/) {
 
     ButtonId hot = ButtonId::None;
     for (const Button& b : buttons_) {
-        if (Inside(b.rect, x, y)) { hot = b.id; break; }
+        if (!b.isLabel && b.id != ButtonId::None && Inside(b.rect, x, y)) {
+            hot = b.id;
+            break;
+        }
     }
     const bool hotChanged = (hot != hotButton_);
     hotButton_ = hot;
@@ -2363,7 +2448,10 @@ void App::OnWheel(float x, float y, int delta, bool ctrl) {
 
     // 겹쳐보기는 세로로 스크롤할 것이 없으므로 휠을 바로 확대에 쓴다.
     if (ctrl || mode_ == PlotMode::Overlay) {
-        ZoomAt(x, notches > 0 ? 0.82 : 1.22);
+        // 한 칸에 18%씩 줄던 것을 8%로 낮췄다. 좁은 구간을 볼 때 한 번만 굴려도
+        // 훌쩍 지나가 버려서 원하는 배율에 맞추기 어려웠다. 굴린 양에 비례하도록
+        // 거듭제곱을 쓰므로, 빠르게 여러 칸 굴리면 그만큼 크게 움직인다.
+        ZoomAt(x, std::pow(0.92, static_cast<double>(notches)));
     } else {
         const float maxScroll = (std::max)(0.0f, TotalLaneHeight() -
                                                      (r.plot.bottom - r.plot.top));
@@ -2380,8 +2468,8 @@ void App::OnKey(WPARAM key) {
     const double span = t1_ - t0_;
 
     switch (key) {
-        case VK_OEM_PLUS: case VK_ADD:      ZoomAt(mid, 0.8); break;
-        case VK_OEM_MINUS: case VK_SUBTRACT: ZoomAt(mid, 1.25); break;
+        case VK_OEM_PLUS: case VK_ADD:      ZoomAt(mid, 0.85); break;
+        case VK_OEM_MINUS: case VK_SUBTRACT: ZoomAt(mid, 1.0 / 0.85); break;
         case VK_LEFT:  ClampView(t0_ - span * 0.15, t1_ - span * 0.15); break;
         case VK_RIGHT: ClampView(t0_ + span * 0.15, t1_ + span * 0.15); break;
         case VK_HOME: case '0': ResetViewToData(); break;
