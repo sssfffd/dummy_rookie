@@ -247,6 +247,14 @@ bool App::CreateDeviceResources() {
                                             rt_.put()))) {
         return false;
     }
+    if (!dashStyle_) {
+        // 이후 로그를 점선으로. 값이 같은 구간에서 두 선이 포개져도 구분된다.
+        const D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
+            D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
+            D2D1_LINE_JOIN_MITER, 10.0f, D2D1_DASH_STYLE_CUSTOM, 0.0f);
+        const float dashes[] = {3.0f, 2.5f};
+        (void)d2d_->CreateStrokeStyle(props, dashes, ARRAYSIZE(dashes), dashStyle_.put());
+    }
     return SUCCEEDED(rt_->CreateSolidColorBrush(pal_.ink, brush_.put()));
 }
 
@@ -258,6 +266,24 @@ void App::DiscardDeviceResources() {
 // ===========================================================================
 // 레이아웃
 // ===========================================================================
+
+
+// 왼쪽 목록 위쪽 머리 부분의 높이. 밴드를 아래로 차곡차곡 쌓아 계산한다.
+// 예전에는 각 요소를 따로 계산해서 필터 칩과 개수 표시가 서로 겹쳤다.
+//
+//   [검색 라벨]  16
+//   [검색 상자]  kSearchH
+//   [칩 1행]     22        전체 / DIG / ANA / STATE
+//   [칩 2행]     22        비교 중일 때만 — 달라진 것만
+//   [선택 줄]    22        전체 선택 / 전체 해제 / 그룹 펴기·접기 / n개 선택
+//
+float App::RailHeaderHeight() const {
+    float h = S(6.0f) + S(16.0f) + S(metrics::kSearchH) + S(8.0f);
+    h += S(22.0f);                          // 칩 1행
+    if (HasCompare()) h += S(24.0f);        // 칩 2행
+    h += S(6.0f) + S(22.0f) + S(8.0f);      // 선택 줄
+    return h;
+}
 
 Rects App::CalcRects() const {
     RECT rc{};
@@ -275,8 +301,8 @@ Rects App::CalcRects() const {
     r.axis = Rect(r.rail.right, r.status.top - S(metrics::kAxisH), w, r.status.top);
     r.plot = Rect(r.rail.right, r.controls.bottom, w, r.axis.top);
 
-    const float head = S(metrics::kSearchH) + S(58.0f);
-    r.railList = Rect(r.rail.left, r.rail.top + head, r.rail.right, r.rail.bottom);
+    r.railList = Rect(r.rail.left, r.rail.top + RailHeaderHeight(), r.rail.right,
+                      r.rail.bottom);
     return r;
 }
 
@@ -306,16 +332,16 @@ float App::TotalLaneHeight() const {
 }
 
 float App::TotalRailHeight() const {
-    float total = 0.0f;
-    for (uint32_t i = 0; i < selected_.size(); ++i) {
-        if (ChannelVisibleInList(i)) total += S(metrics::kRowH);
-    }
-    return total;
+    return static_cast<float>(railRows_.size()) * S(metrics::kRowH);
 }
 
 bool App::ChannelVisibleInList(uint32_t ch) const {
     if (!ds_) return false;
-    if (filter_ == -2 && !ChannelDiffers(ch)) return false;
+    // "달라진 것만" 은 값이 바뀐 채널과 이후 로그에서 사라진 채널을 모두 뜻한다.
+    if (filter_ == -2) {
+        const bool missing = ch >= matchB_.size() || matchB_[ch] < 0;
+        if (!missing && !ChannelDiffers(ch)) return false;
+    }
     if (filter_ >= 0 && static_cast<int>(lc_channel_type(ds_, ch)) != filter_) return false;
     if (query_.empty()) return true;
     std::wstring name = lc_channel_name(ds_, ch);
@@ -360,22 +386,18 @@ void App::LoadPath(const std::wstring& path) {
     fileName_ = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
 
     const uint32_t n = lc_channel_count(ds_);
-    selected_.assign(n, true);
-    // 채널이 아주 많으면 앞쪽 40개만 켜 둔다. 200개를 한 번에 그리면 레인이
-    // 너무 얇아져서 아무것도 읽을 수 없다.
-    const uint32_t kInitial = 40;
-    if (n > kInitial) {
-        for (uint32_t i = kInitial; i < n; ++i) selected_[i] = false;
-    }
+    // 아무것도 선택하지 않은 채로 시작한다. 200채널을 한꺼번에 그려 놓고 지우는
+    // 것보다, 볼 것을 골라 담는 쪽이 빠르다.
+    selected_.assign(n, false);
+    anchorChannel_ = -1;
+    groupOpen_.clear();
 
     // 이전 로그가 바뀌었으므로 채널 매칭을 다시 맞춘다.
     if (dsB_) RebuildComparison();
 
     message_ = lc_notes(ds_);
-    if (n > kInitial) {
-        if (!message_.empty()) message_ += L" ";
-        message_ += Fmt(L"채널이 %u개여서 처음 %u개만 표시합니다.", n, kInitial);
-    }
+    if (!message_.empty()) message_ += L" ";
+    message_ += Fmt(L"채널 %u개를 읽었습니다. 왼쪽에서 볼 IO 를 고르세요.", n);
     messageIsError_ = false;
 
     ResetViewToData();
@@ -420,6 +442,8 @@ void App::OpenFileDialog() {
 void App::CloseCompare() {
     if (dsB_) { lc_close(dsB_); dsB_ = nullptr; }
     fileNameB_.clear();
+    extraB_.clear();
+    compareOffset_ = 0.0;
     matchB_.clear();
     diffCount_.clear();
     cmpLo_.clear(); cmpHi_.clear();
@@ -472,7 +496,10 @@ double App::CompareValueAt(uint32_t ch, double t) const {
     const double* ta = lc_times(ds_);
     const double* tb = lc_times(dsB_);
     if (!ta || !tb) return std::numeric_limits<double>::quiet_NaN();
-    return lc_sample_at(dsB_, static_cast<uint32_t>(matchB_[ch]), (t - ta[0]) + tb[0]);
+    // compareOffset_ 은 사용자가 맞춘 보정값. 두 로그의 시작 시각이 정말로 다를 때
+    // (트리거 시점이 어긋난 경우 등) 이걸로 밀어 맞춘다.
+    return lc_sample_at(dsB_, static_cast<uint32_t>(matchB_[ch]),
+                        (t - ta[0]) + tb[0] + compareOffset_);
 }
 
 double App::DiffValueAt(uint32_t ch, double t) const {
@@ -552,8 +579,24 @@ void App::RebuildComparison() {
         if (diffCount_[ch] > 0) ++changed;
     }
 
-    compareSummary_ = Fmt(L"이후 로그 %s · 이름이 맞은 채널 %u/%u · 값이 달라진 채널 %u",
-                          fileNameB_.c_str(), matched, n, changed);
+    // 이후 로그에만 있는 채널 (새로 생긴 IO). 이전 로그에 짝이 없어 그릴 수는
+    // 없지만, 무엇이 새로 생겼는지는 두 로그를 견줄 때 꼭 알아야 한다.
+    extraB_.clear();
+    const uint32_t nb = lc_channel_count(dsB_);
+    for (uint32_t b = 0; b < nb; ++b) {
+        if (lc_find_channel(ds_, lc_channel_name(dsB_, b)) < 0) extraB_.push_back(b);
+    }
+    const uint32_t removed = n - matched;
+
+    compareSummary_ =
+        Fmt(L"이후 로그 %s · 이름이 맞은 채널 %u/%u · 값이 달라진 채널 %u · "
+            L"이전에만 있음 %u · 이후에만 있음 %u",
+            fileNameB_.c_str(), matched, n, changed, removed,
+            static_cast<uint32_t>(extraB_.size()));
+    if (compareOffset_ != 0.0) {
+        compareSummary_ += L" · 시간 보정 " + FormatSpan(std::fabs(compareOffset_)) +
+                           (compareOffset_ < 0 ? L" 당김" : L" 밀음");
+    }
     message_ = compareSummary_;
     if (matched == 0) {
         message_ = L"두 로그에서 이름이 같은 채널을 하나도 찾지 못했습니다. "
@@ -564,9 +607,194 @@ void App::RebuildComparison() {
     }
 }
 
+
+// ===========================================================================
+// 왼쪽 목록 — 10개씩 묶은 그룹, Shift/Ctrl 선택
+// ===========================================================================
+
+void App::GroupCounts(uint32_t group, uint32_t& visible, uint32_t& selected) const {
+    visible = 0;
+    selected = 0;
+    if (!ds_) return;
+    const uint32_t n = lc_channel_count(ds_);
+    const uint32_t first = group * kGroupSize;
+    for (uint32_t ch = first; ch < (std::min)(first + kGroupSize, n); ++ch) {
+        if (!ChannelVisibleInList(ch)) continue;
+        ++visible;
+        if (selected_[ch]) ++selected;
+    }
+}
+
+void App::ToggleGroup(uint32_t group) {
+    if (group < groupOpen_.size()) groupOpen_[group] = !groupOpen_[group];
+}
+
+void App::SetGroupSelected(uint32_t group, bool on) {
+    if (!ds_) return;
+    const uint32_t n = lc_channel_count(ds_);
+    const uint32_t first = group * kGroupSize;
+    for (uint32_t ch = first; ch < (std::min)(first + kGroupSize, n); ++ch) {
+        if (ChannelVisibleInList(ch)) selected_[ch] = on;
+    }
+}
+
+// 목록에 실제로 그릴 줄들을 만든다. 그룹 머리, 펼쳐진 그룹의 채널, 그리고
+// 마지막에 "이후 로그에만 있는" 채널 목록.
+void App::RebuildRailRows() {
+    railRows_.clear();
+    if (!ds_) return;
+
+    const uint32_t n = lc_channel_count(ds_);
+    const uint32_t groups = (n + kGroupSize - 1) / kGroupSize;
+    if (groupOpen_.size() != groups) groupOpen_.assign(groups, true);
+
+    for (uint32_t g = 0; g < groups; ++g) {
+        uint32_t visible = 0, selected = 0;
+        GroupCounts(g, visible, selected);
+        if (visible == 0) continue;   // 필터에 걸리는 채널이 하나도 없는 그룹은 숨긴다
+        railRows_.push_back({RailRow::Kind::Group, g});
+        if (!groupOpen_[g]) continue;
+        const uint32_t first = g * kGroupSize;
+        for (uint32_t ch = first; ch < (std::min)(first + kGroupSize, n); ++ch) {
+            if (ChannelVisibleInList(ch)) railRows_.push_back({RailRow::Kind::Channel, ch});
+        }
+    }
+
+    // 이후 로그에만 있는 채널. 이전 로그에 짝이 없으니 그릴 수는 없지만,
+    // "무엇이 새로 생겼는지" 는 두 로그를 견줄 때 꼭 알아야 하는 정보다.
+    if (!extraB_.empty()) {
+        railRows_.push_back({RailRow::Kind::ExtraHeader, 0});
+        for (uint32_t b : extraB_) railRows_.push_back({RailRow::Kind::ExtraChannel, b});
+    }
+}
+
+void App::ClickChannel(uint32_t ch, bool shift, bool ctrl, bool onCheckbox) {
+    if (!ds_ || ch >= selected_.size()) return;
+
+    if (onCheckbox || ctrl) {
+        // 체크박스와 Ctrl+클릭은 그 하나만 뒤집는다.
+        selected_[ch] = !selected_[ch];
+        anchorChannel_ = static_cast<int32_t>(ch);
+        return;
+    }
+    if (shift && anchorChannel_ >= 0) {
+        // 기준점부터 여기까지 한 번에 켠다. 목록에 보이는 것만 대상으로 한다.
+        const uint32_t a = static_cast<uint32_t>(anchorChannel_);
+        const uint32_t lo = (std::min)(a, ch);
+        const uint32_t hi = (std::max)(a, ch);
+        for (uint32_t i = lo; i <= hi && i < selected_.size(); ++i) {
+            if (ChannelVisibleInList(i)) selected_[i] = true;
+        }
+        return;
+    }
+    // 그냥 클릭은 그 하나만 남긴다.
+    for (size_t i = 0; i < selected_.size(); ++i) selected_[i] = false;
+    selected_[ch] = true;
+    anchorChannel_ = static_cast<int32_t>(ch);
+}
+
+// ===========================================================================
+// 두 로그 시간 맞추기
+// ===========================================================================
+
+void App::ResetAlign() {
+    compareOffset_ = 0.0;
+    if (dsB_) RebuildComparison();
+}
+
+// 표본 간격 단위로 민다.
+void App::NudgeAlign(int steps) {
+    if (!ds_ || !dsB_) return;
+    const uint32_t n = lc_sample_count(ds_);
+    const double* t = lc_times(ds_);
+    if (!t || n < 2) return;
+    const double dt = (t[n - 1] - t[0]) / static_cast<double>(n - 1);
+    compareOffset_ += dt * steps;
+    RebuildComparison();
+}
+
+// 이후 로그를 조금씩 밀어 보면서 차이가 가장 작아지는 위치를 찾는다.
+//
+// 두 로그의 트리거 시점이 어긋나면 시작점만 맞춰서는 겹치지 않는다. 값이 가장
+// 잘 맞는 지점을 직접 찾는 편이 확실하다. 전 구간을 다 보면 느리므로 표본을
+// 솎아서 훑고, 대강 찾은 뒤 그 주변을 다시 촘촘히 본다.
+void App::AutoAlignCompare() {
+    if (!ds_ || !dsB_) return;
+    const uint32_t n = lc_sample_count(ds_);
+    const double* t = lc_times(ds_);
+    if (!t || n < 4) return;
+
+    std::vector<uint32_t> chans;
+    for (uint32_t ch = 0; ch < lc_channel_count(ds_) && chans.size() < 12; ++ch) {
+        if (ch < matchB_.size() && matchB_[ch] >= 0) chans.push_back(ch);
+    }
+    if (chans.empty()) {
+        message_ = L"이름이 맞는 채널이 없어 정렬할 수 없습니다.";
+        messageIsError_ = true;
+        return;
+    }
+
+    const double span = t[n - 1] - t[0];
+    const double dt = span / static_cast<double>(n - 1);
+    const uint32_t stride = (std::max)(1u, n / 400u);   // 400점 정도만 훑는다
+
+    // 채널마다 값 크기가 달라서, 자기 범위로 나눠 정규화한 뒤 더한다.
+    auto cost = [&](double offset) {
+        const double saved = compareOffset_;
+        compareOffset_ = offset;
+        double total = 0.0;
+        uint32_t counted = 0;
+        for (uint32_t ch : chans) {
+            const double lo = lc_channel_min(ds_, ch);
+            const double hi = lc_channel_max(ds_, ch);
+            const double scale = (hi > lo) ? (hi - lo) : 1.0;
+            const double* v = lc_channel_values(ds_, ch);
+            if (!v) continue;
+            for (uint32_t i = 0; i < n; i += stride) {
+                const double b = CompareValueAt(ch, t[i]);
+                if (!std::isfinite(b) || !std::isfinite(v[i])) continue;
+                total += std::fabs(b - v[i]) / scale;
+                ++counted;
+            }
+        }
+        compareOffset_ = saved;
+        // 겹치는 구간이 너무 적으면 억지로 맞춘 것이므로 점수를 나쁘게 준다.
+        if (counted < 8) return std::numeric_limits<double>::infinity();
+        return total / static_cast<double>(counted);
+    };
+
+    // 1단계: 전체 구간의 ±40% 를 성기게 훑는다
+    const double range = span * 0.4;
+    double best = 0.0;
+    double bestCost = std::numeric_limits<double>::infinity();
+    const int coarse = 80;
+    for (int k = -coarse; k <= coarse; ++k) {
+        const double off = range * k / coarse;
+        const double c = cost(off);
+        if (c < bestCost) { bestCost = c; best = off; }
+    }
+    // 2단계: 찾은 곳 주변을 한 표본 간격 단위로 다시 본다
+    for (int k = -30; k <= 30; ++k) {
+        const double off = best + dt * k;
+        const double c = cost(off);
+        if (c < bestCost) { bestCost = c; best = off; }
+    }
+
+    if (!std::isfinite(bestCost)) {
+        message_ = L"겹치는 구간을 찾지 못했습니다. 두 로그가 같은 구간을 담고 있는지 확인하세요.";
+        messageIsError_ = true;
+        return;
+    }
+    compareOffset_ = best;
+    RebuildComparison();
+    message_ = compareSummary_ + Fmt(L" · 자동 정렬 %s", FormatSpan(std::fabs(best)).c_str()) +
+               (best < 0 ? L" 당김" : L" 밀음");
+    messageIsError_ = false;
+}
+
 void App::DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
                         double lo, double hi, const D2D1_COLOR_F& color, bool diff,
-                        float thickness) {
+                        float thickness, bool dashed) {
     if (!dsB_ || !(hi > lo)) return;
     const double* t = lc_times(ds_);
     if (!t) return;
@@ -595,7 +823,8 @@ void App::DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float b
     }
     if (!p.End()) return;
     brush_->SetColor(color);
-    rt_->DrawGeometry(p.geo.get(), brush_.get(), thickness);
+    rt_->DrawGeometry(p.geo.get(), brush_.get(), thickness,
+                      dashed ? dashStyle_.get() : nullptr);
 }
 
 void App::ResetViewToData() {
@@ -847,7 +1076,12 @@ void App::RebuildButtons(const Rects& r) {
     addCtl(ButtonId::ModeOverlay, L"겹쳐보기", mode_ == PlotMode::Overlay, S(16.0f));
     if (HasCompare()) {
         addCtl(ButtonId::CompareBoth, L"이전+이후", compareMode_ == CompareMode::Both, S(2.0f));
-        addCtl(ButtonId::CompareDiff, L"차이 Δ", compareMode_ == CompareMode::Diff, S(16.0f));
+        addCtl(ButtonId::CompareDiff, L"차이 Δ", compareMode_ == CompareMode::Diff, S(12.0f));
+        addCtl(ButtonId::Stagger, L"벌려 그리기", stagger_, S(12.0f));
+        addCtl(ButtonId::AlignLeft, L"◀", false, S(2.0f));
+        addCtl(ButtonId::AlignRight, L"▶", false, S(2.0f));
+        addCtl(ButtonId::AlignAuto, L"자동 정렬", false, S(2.0f));
+        addCtl(ButtonId::AlignReset, L"정렬 해제", false, S(16.0f));
     }
     addCtl(ButtonId::OrientAuto, L"자동", orientation_ == LC_ORIENT_AUTO, S(2.0f));
     addCtl(ButtonId::OrientRows, L"행 = IO", orientation_ == LC_ORIENT_ROWS, S(2.0f));
@@ -860,9 +1094,9 @@ void App::RebuildButtons(const Rects& r) {
     addCtl(ButtonId::Fit, L"전체 보기", false, S(16.0f));
     addCtl(ButtonId::ClearCursors, L"커서 해제", false, S(2.0f));
 
-    // 레일 안의 버튼들
-    const float ry = r.rail.top + S(24.0f) + S(metrics::kSearchH) + S(8.0f);
-    const float ch = S(20.0f);
+    // 레일 안의 버튼들. 위에서 아래로 밴드를 쌓는다 (RailHeaderHeight 와 같은 순서).
+    float ry = r.rail.top + S(6.0f) + S(16.0f) + S(metrics::kSearchH) + S(8.0f);
+    const float chipH = S(22.0f);
     float rx = r.rail.left + pad;
     auto addChip = [&](ButtonId id, const wchar_t* label, bool pressed) {
         Button b;
@@ -870,7 +1104,7 @@ void App::RebuildButtons(const Rects& r) {
         b.label = label;
         b.pressed = pressed;
         const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(16.0f);
-        b.rect = Rect(rx, ry, rx + w, ry + ch);
+        b.rect = Rect(rx, ry, rx + w, ry + chipH);
         rx += w + S(5.0f);
         buttons_.push_back(std::move(b));
     };
@@ -878,21 +1112,28 @@ void App::RebuildButtons(const Rects& r) {
     addChip(ButtonId::FilterDigital, L"DIG", filter_ == LC_CH_DIGITAL);
     addChip(ButtonId::FilterAnalog, L"ANA", filter_ == LC_CH_ANALOG);
     addChip(ButtonId::FilterState, L"STATE", filter_ == LC_CH_STATE);
-    if (HasCompare()) addChip(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
+    if (HasCompare()) {
+        // 줄을 바꾼다. 한 줄에 밀어 넣으면 개수 표시와 겹친다.
+        ry += S(24.0f);
+        rx = r.rail.left + pad;
+        addChip(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
+    }
 
-    const float sy = ry + ch + S(6.0f);
+    const float sy = ry + chipH + S(6.0f);
     float sx = r.rail.left + pad;
     auto addLink = [&](ButtonId id, const wchar_t* label) {
         Button b;
         b.id = id;
         b.label = label;
-        const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(14.0f);
-        b.rect = Rect(sx, sy, sx + w, sy + S(18.0f));
+        const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(12.0f);
+        b.rect = Rect(sx, sy, sx + w, sy + S(22.0f));
         sx += w + S(4.0f);
         buttons_.push_back(std::move(b));
     };
     addLink(ButtonId::SelectAll, L"전체 선택");
     addLink(ButtonId::SelectNone, L"전체 해제");
+    addLink(ButtonId::GroupsExpand, L"펴기");
+    addLink(ButtonId::GroupsCollapse, L"접기");
 }
 
 void App::Render() {
@@ -959,8 +1200,8 @@ void App::DrawControls(const Rects& r) {
     }
     // 조작법을 눈에 보이는 곳에 둔다. 확대·축소가 있는지 모르면 없는 것과 같다.
     DrawLabel(mode_ == PlotMode::Overlay
-                  ? L"휠 = 확대·축소 · 드래그 = 이동 · 클릭 = 커서 A · Shift+클릭 = 커서 B"
-                  : L"Ctrl+휠 = 확대·축소 · 휠 = 채널 스크롤 · 드래그 = 이동 · 클릭 = 커서 A",
+                  ? L"휠 = 확대·축소 · 드래그 = 이동 · 목록: 클릭/Ctrl+클릭/Shift+클릭"
+                  : L"Ctrl+휠 = 확대·축소 · 휠 = 채널 스크롤 · 목록: 클릭/Ctrl+클릭/Shift+클릭",
               fSmallRight_.get(),
               Rect(r.controls.left, r.controls.top, r.controls.right - S(12.0f),
                    r.controls.bottom),
@@ -973,7 +1214,7 @@ void App::DrawRail(const Rects& r) {
 
     DrawLabel(L"IO 이름 검색", fSmall_.get(),
               Rect(r.rail.left + S(10.0f), r.rail.top + S(4.0f),
-                   r.rail.right, r.rail.top + S(22.0f)),
+                   r.rail.right, r.rail.top + S(20.0f)),
               pal_.ink3);
 
     for (const Button& b : buttons_) {
@@ -981,30 +1222,120 @@ void App::DrawRail(const Rects& r) {
             DrawButton(b, hotButton_ == b.id);
         }
     }
-
     if (!ds_) return;
 
-    // 선택 개수
+    // 선택 개수는 목록 바로 위 오른쪽에. 버튼들과 같은 줄이지만 오른쪽 끝이라
+    // 겹치지 않는다.
     uint32_t sel = 0;
-    for (bool s : selected_) sel += s ? 1u : 0u;
-    DrawLabel(Fmt(L"%u / %u", sel, lc_channel_count(ds_)), fSmallRight_.get(),
-              Rect(r.rail.left, r.railList.top - S(20.0f), r.rail.right - S(10.0f),
-                   r.railList.top - S(2.0f)),
-              pal_.ink3);
+    for (bool b : selected_) sel += b ? 1u : 0u;
+    DrawLabel(Fmt(L"%u / %u 선택", sel, lc_channel_count(ds_)), fSmallRight_.get(),
+              Rect(r.rail.left, r.railList.top - S(28.0f), r.rail.right - S(10.0f),
+                   r.railList.top - S(8.0f)),
+              sel ? pal_.ink2 : pal_.ink3);
+
+    RebuildRailRows();
 
     rt_->PushAxisAlignedClip(r.railList, D2D1_ANTIALIAS_MODE_ALIASED);
     const float rowH = S(metrics::kRowH);
-    float y = r.railList.top - scrollRail_;
     const float box = S(12.0f);
+    float y = r.railList.top - scrollRail_;
 
-    for (uint32_t ch = 0; ch < lc_channel_count(ds_); ++ch) {
-        if (!ChannelVisibleInList(ch)) continue;
+    for (const RailRow& row : railRows_) {
         const float top = y;
         y += rowH;
         if (top + rowH < r.railList.top || top > r.railList.bottom) continue;
 
+        if (row.kind == RailRow::Kind::Group) {
+            uint32_t visible = 0, selected = 0;
+            GroupCounts(row.index, visible, selected);
+            const bool open = row.index < groupOpen_.size() && groupOpen_[row.index];
+
+            Fill(Rect(r.rail.left, top, r.rail.right, top + rowH), pal_.hover);
+
+            // 펼침 표시 삼각형
+            const float tx = r.rail.left + S(10.0f);
+            const float ty = top + rowH * 0.5f;
+            brush_->SetColor(pal_.ink2);
+            Path tri;
+            if (tri.Begin(d2d_.get())) {
+                if (open) {
+                    tri.Move(tx, ty - S(2.0f));
+                    tri.Line(tx + S(8.0f), ty - S(2.0f));
+                    tri.Line(tx + S(4.0f), ty + S(3.0f));
+                    tri.Line(tx, ty - S(2.0f));
+                } else {
+                    tri.Move(tx + S(1.0f), ty - S(4.0f));
+                    tri.Line(tx + S(6.0f), ty);
+                    tri.Line(tx + S(1.0f), ty + S(4.0f));
+                    tri.Line(tx + S(1.0f), ty - S(4.0f));
+                }
+                if (tri.End()) rt_->DrawGeometry(tri.geo.get(), brush_.get(), S(1.4f));
+            }
+
+            // 그룹 전체 선택 상자 (일부만 선택되면 반쯤 찬 표시)
+            const D2D1_RECT_F cb = Rect(r.rail.left + S(26.0f), top + (rowH - box) * 0.5f,
+                                        r.rail.left + S(26.0f) + box, top + (rowH + box) * 0.5f);
+            const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cb, S(3.0f), S(3.0f));
+            if (selected == visible && visible > 0) {
+                brush_->SetColor(pal_.accent);
+                rt_->FillRoundedRectangle(crr, brush_.get());
+                brush_->SetColor(pal_.onAccent);
+                rt_->DrawLine(D2D1::Point2F(cb.left + box * 0.24f, cb.top + box * 0.52f),
+                              D2D1::Point2F(cb.left + box * 0.44f, cb.top + box * 0.74f),
+                              brush_.get(), S(1.6f));
+                rt_->DrawLine(D2D1::Point2F(cb.left + box * 0.44f, cb.top + box * 0.74f),
+                              D2D1::Point2F(cb.left + box * 0.78f, cb.top + box * 0.28f),
+                              brush_.get(), S(1.6f));
+            } else {
+                brush_->SetColor(pal_.hair);
+                rt_->DrawRoundedRectangle(crr, brush_.get(), 1.0f);
+                if (selected > 0) {
+                    Fill(Rect(cb.left + S(3.0f), top + rowH * 0.5f - S(1.0f),
+                              cb.right - S(3.0f), top + rowH * 0.5f + S(1.0f)),
+                         pal_.accent);
+                }
+            }
+
+            const uint32_t first = row.index * kGroupSize + 1;
+            const uint32_t last = (std::min)(first + kGroupSize - 1, lc_channel_count(ds_));
+            DrawLabel(Fmt(L"%03u – %03u", first, last), fMono_.get(),
+                      Rect(cb.right + S(9.0f), top, r.rail.right - S(60.0f), top + rowH),
+                      pal_.ink);
+            DrawLabel(Fmt(L"%u/%u", selected, visible), fSmallRight_.get(),
+                      Rect(r.rail.right - S(58.0f), top, r.rail.right - S(12.0f), top + rowH),
+                      selected ? pal_.accent : pal_.ink3);
+            continue;
+        }
+
+        if (row.kind == RailRow::Kind::ExtraHeader) {
+            Fill(Rect(r.rail.left, top, r.rail.right, top + rowH), pal_.hover);
+            DrawLabel(Fmt(L"이후 로그에만 있음  (%u)", static_cast<uint32_t>(extraB_.size())),
+                      fSmall_.get(),
+                      Rect(r.rail.left + S(12.0f), top, r.rail.right - S(10.0f), top + rowH),
+                      pal_.cursorB);
+            continue;
+        }
+
+        if (row.kind == RailRow::Kind::ExtraChannel) {
+            // 이전 로그에 짝이 없어 그릴 수는 없다. 이름만 보여 준다.
+            DrawLabel(Ellipsize(dw_.get(), lc_channel_name(dsB_, row.index), fMono_.get(),
+                                r.rail.right - r.rail.left - S(70.0f)),
+                      fMono_.get(),
+                      Rect(r.rail.left + S(38.0f), top, r.rail.right - S(56.0f), top + rowH),
+                      pal_.ink3);
+            DrawLabel(L"신규", fSmallRight_.get(),
+                      Rect(r.rail.right - S(54.0f), top, r.rail.right - S(12.0f), top + rowH),
+                      pal_.cursorB);
+            continue;
+        }
+
+        // 일반 채널 줄
+        const uint32_t ch = row.index;
         const bool on = selected_[ch];
-        const float cx = r.rail.left + S(12.0f);
+        if (anchorChannel_ == static_cast<int32_t>(ch)) {
+            Fill(Rect(r.rail.left, top, r.rail.right, top + rowH), pal_.hover);
+        }
+        const float cx = r.rail.left + S(26.0f);
         const D2D1_RECT_F cb = Rect(cx, top + (rowH - box) * 0.5f, cx + box,
                                     top + (rowH + box) * 0.5f);
         const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cb, S(3.0f), S(3.0f));
@@ -1023,13 +1354,12 @@ void App::DrawRail(const Rects& r) {
             rt_->DrawRoundedRectangle(crr, brush_.get(), 1.0f);
         }
 
-        const float tagW = S(44.0f);
-        const float nameL = cb.right + S(10.0f);
+        const float tagW = S(48.0f);
+        const float nameL = cb.right + S(9.0f);
         const float nameR = r.rail.right - tagW - S(12.0f);
-        DrawLabel(Ellipsize(dw_.get(), lc_channel_name(ds_, ch), fMono_.get(),
-                            nameR - nameL),
+        DrawLabel(Ellipsize(dw_.get(), lc_channel_name(ds_, ch), fMono_.get(), nameR - nameL),
                   fMono_.get(), Rect(nameL, top, nameR, top + rowH),
-                  on ? pal_.ink : pal_.ink3);
+                  on ? pal_.ink : pal_.ink2);
 
         // 비교 중이면 타입 대신 "달라진 샘플 수"를 보여 준다. 어느 IO 가 바뀌었는지가
         // 두 로그를 견줄 때 가장 먼저 알고 싶은 것이다.
@@ -1037,7 +1367,8 @@ void App::DrawRail(const Rects& r) {
         D2D1_COLOR_F tagColor = pal_.ink3;
         if (HasCompare()) {
             if (ch >= matchB_.size() || matchB_[ch] < 0) {
-                tag = L"없음";
+                tag = L"삭제";
+                tagColor = pal_.cursorB;
             } else if (diffCount_[ch] == 0) {
                 tag = L"동일";
             } else {
@@ -1128,14 +1459,17 @@ void App::DrawLanesView(const Rects& r) {
                 StrokeLine(gutterX, Px(zero), rightX, Px(zero), pal_.axis);
             }
             DrawResampled(ch, r.plot, lane.top + pad, lane.bottom - pad, dlo, dhi,
-                          pal_.accent, true, S(2.0f));
+                          pal_.accent, true, S(2.0f), false);
         } else if (compare) {
             // 두 로그를 같은 눈금에 겹친다. 눈금은 둘을 모두 담는 범위로.
             const double lo = cmpLo_[ch], hi = cmpHi_[ch];
             DrawSeries(ch, r.plot, lane.top + pad, lane.bottom - pad, lo, hi,
                        pal_.accent);
-            DrawResampled(ch, r.plot, lane.top + pad, lane.bottom - pad, lo, hi,
-                          pal_.cursorB, false, S(1.6f));
+            // 값이 같은 구간에서는 두 선이 정확히 포개져 하나로 보인다. 점선으로
+            // 그리고, 필요하면 살짝 띄워서 겹쳐도 두 개임을 알 수 있게 한다.
+            const float shift = stagger_ ? (lane.bottom - lane.top) * 0.10f : 0.0f;
+            DrawResampled(ch, r.plot, lane.top + pad + shift, lane.bottom - pad + shift,
+                          lo, hi, pal_.cursorB, false, S(1.8f), true);
         } else {
             switch (type) {
                 case LC_CH_DIGITAL: DrawLaneDigital(ch, lane, r.plot); break;
@@ -1580,14 +1914,15 @@ void App::DrawOverlayView(const Rects& r) {
     for (uint32_t ch : shown) {
         const D2D1_COLOR_F col = pal_.series[ch % 8];
         if (cmpDiff) {
-            DrawResampled(ch, r.plot, top, bottom, lo, hi, col, true, S(2.0f));
+            DrawResampled(ch, r.plot, top, bottom, lo, hi, col, true, S(2.0f), false);
             continue;
         }
         DrawSeries(ch, r.plot, top, bottom, lo, hi, col);
         if (HasCompare()) {
             // 같은 색을 옅고 얇게 그린다. 색은 채널을 뜻하고, 굵기가 이전/이후를 뜻한다.
-            const D2D1_COLOR_F faded = D2D1::ColorF(col.r, col.g, col.b, 0.5f);
-            DrawResampled(ch, r.plot, top, bottom, lo, hi, faded, false, S(1.4f));
+            const float shift = stagger_ ? (bottom - top) * 0.02f : 0.0f;
+            DrawResampled(ch, r.plot, top + shift, bottom + shift, lo, hi, col, false,
+                          S(1.8f), true);
         }
     }
     if (cmpDiff && lo <= 0.0 && hi >= 0.0) {
@@ -1615,7 +1950,7 @@ void App::DrawOverlayView(const Rects& r) {
     if (HasCompare()) {
         DrawLabel(compareMode_ == CompareMode::Diff
                       ? L"이후 − 이전"
-                      : L"진한 선 = 이전 · 옅은 선 = 이후",
+                      : L"실선 = 이전 · 점선 = 이후",
                   fSmall_.get(),
                   Rect(lx, r.plot.top, lx + S(220.0f), r.plot.top + legendH), pal_.ink3);
     }
@@ -1723,6 +2058,11 @@ void App::OnButton(ButtonId id) {
             break;
         case ButtonId::CompareBoth: compareMode_ = CompareMode::Both; break;
         case ButtonId::CompareDiff: compareMode_ = CompareMode::Diff; break;
+        case ButtonId::Stagger: stagger_ = !stagger_; break;
+        case ButtonId::AlignLeft:  NudgeAlign(-1); break;
+        case ButtonId::AlignRight: NudgeAlign(1); break;
+        case ButtonId::AlignAuto:  AutoAlignCompare(); break;
+        case ButtonId::AlignReset: ResetAlign(); break;
         case ButtonId::OrientAuto:
         case ButtonId::OrientRows:
         case ButtonId::OrientCols: {
@@ -1749,12 +2089,23 @@ void App::OnButton(ButtonId id) {
         case ButtonId::Fit: if (ds_) ResetViewToData(); break;
         case ButtonId::ClearCursors: hasA_ = hasB_ = false; break;
         case ButtonId::SelectAll:
-            for (size_t i = 0; i < selected_.size(); ++i) selected_[i] = true;
+            // 필터가 걸려 있으면 지금 목록에 보이는 것만 켠다.
+            for (uint32_t i = 0; i < selected_.size(); ++i) {
+                if (ChannelVisibleInList(i)) selected_[i] = true;
+            }
             scrollPlot_ = 0.0f;
             break;
         case ButtonId::SelectNone:
             for (size_t i = 0; i < selected_.size(); ++i) selected_[i] = false;
             scrollPlot_ = 0.0f;
+            break;
+        case ButtonId::GroupsExpand:
+            for (size_t i = 0; i < groupOpen_.size(); ++i) groupOpen_[i] = true;
+            scrollRail_ = 0.0f;
+            break;
+        case ButtonId::GroupsCollapse:
+            for (size_t i = 0; i < groupOpen_.size(); ++i) groupOpen_[i] = false;
+            scrollRail_ = 0.0f;
             break;
         case ButtonId::FilterAll:     filter_ = -1; scrollRail_ = 0.0f; break;
         case ButtonId::FilterDigital: filter_ = LC_CH_DIGITAL; scrollRail_ = 0.0f; break;
@@ -1777,17 +2128,38 @@ void App::OnLButtonDown(float x, float y, bool shift) {
     if (ds_ && Inside(r.railList, x, y)) {
         const float rowH = S(metrics::kRowH);
         float ry = r.railList.top - scrollRail_;
-        for (uint32_t ch = 0; ch < lc_channel_count(ds_); ++ch) {
-            if (!ChannelVisibleInList(ch)) continue;
-            if (y >= ry && y < ry + rowH) {
-                selected_[ch] = !selected_[ch];
-                const float maxScroll = (std::max)(0.0f, TotalLaneHeight() -
-                                                             (r.plot.bottom - r.plot.top));
-                scrollPlot_ = (std::min)(scrollPlot_, maxScroll);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return;
-            }
+        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+
+        for (const RailRow& row : railRows_) {
+            const bool hit = (y >= ry && y < ry + rowH);
             ry += rowH;
+            if (!hit) continue;
+
+            if (row.kind == RailRow::Kind::Group) {
+                // 왼쪽 삼각형 자리를 누르면 펼침, 체크 상자를 누르면 그룹 전체 선택,
+                // 나머지 이름 부분은 펼침으로 친다 (더 자주 쓰는 동작).
+                const float boxL = r.rail.left + S(26.0f);
+                const float boxR = boxL + S(12.0f);
+                if (x >= boxL - S(3.0f) && x <= boxR + S(3.0f)) {
+                    uint32_t visible = 0, selected = 0;
+                    GroupCounts(row.index, visible, selected);
+                    SetGroupSelected(row.index, selected < visible);
+                } else {
+                    ToggleGroup(row.index);
+                }
+            } else if (row.kind == RailRow::Kind::Channel) {
+                const float boxL = r.rail.left + S(26.0f);
+                const float boxR = boxL + S(12.0f);
+                const bool onCheckbox = (x >= boxL - S(3.0f) && x <= boxR + S(3.0f));
+                ClickChannel(row.index, shift, ctrl, onCheckbox);
+            }
+            // ExtraHeader / ExtraChannel 은 이전 로그에 짝이 없어 그릴 수 없다.
+
+            const float maxScroll =
+                (std::max)(0.0f, TotalLaneHeight() - (r.plot.bottom - r.plot.top));
+            scrollPlot_ = (std::min)(scrollPlot_, maxScroll);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
         }
         return;
     }

@@ -39,7 +39,9 @@ enum class ButtonId {
     CompareBoth, CompareDiff,
     ZoomIn, ZoomOut, Fit, ClearCursors,
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState,
-    FilterChanged
+    FilterChanged,
+    GroupsExpand, GroupsCollapse,
+    AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger
 };
 
 // 레인: 채널마다 한 줄, 각자 세로 눈금. 파형을 훑어볼 때.
@@ -54,6 +56,18 @@ enum class CompareMode { Both, Diff };
 // 겹쳐보기에서 한 번에 그릴 수 있는 채널 수. 범주형 색이 여덟 개까지만
 // 서로 구분되므로 그 이상은 색으로 구별이 안 된다.
 constexpr uint32_t kMaxOverlay = 8;
+
+// 채널 목록을 이 개수씩 묶어 접었다 폈다 한다. 200채널 로그에서 목록을 훑는
+// 것보다 그룹 단위로 여닫는 쪽이 빠르다.
+constexpr uint32_t kGroupSize = 10;
+
+// 왼쪽 목록의 한 줄. 그룹 머리, 채널, 그리고 "이후 로그에만 있는" 채널까지
+// 한 배열로 다뤄야 스크롤과 클릭 판정이 한곳에 모인다.
+struct RailRow {
+    enum class Kind : uint8_t { Group, Channel, ExtraHeader, ExtraChannel };
+    Kind kind = Kind::Channel;
+    uint32_t index = 0;   // Group: 그룹 번호, Channel: 이전 로그 채널, ExtraChannel: 이후 로그 채널
+};
 
 struct Button {
     ButtonId id = ButtonId::None;
@@ -110,7 +124,7 @@ private:
     // 이전 로그의 시간 격자를 따라가며 이후 로그(또는 차이)를 그린다.
     void DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
                        double lo, double hi, const D2D1_COLOR_F& color, bool diff,
-                       float thickness);
+                       float thickness, bool dashed);
     // 겹쳐보기용: 하나의 세로 눈금 위에 채널 하나를 그린다.
     void DrawSeries(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
                     double lo, double hi, const D2D1_COLOR_F& color);
@@ -147,6 +161,21 @@ private:
     void IndexRange(int& i0, int& i1) const;
     int  IndexAt(double t) const;
     bool ChannelVisibleInList(uint32_t ch) const;
+    // ---- 왼쪽 목록 ----
+    void RebuildRailRows();
+    float RailHeaderHeight() const;
+    void ToggleGroup(uint32_t group);
+    void SetGroupSelected(uint32_t group, bool on);
+    // 그룹 안에서 목록에 보이는 채널 수와 그중 선택된 수
+    void GroupCounts(uint32_t group, uint32_t& visible, uint32_t& selected) const;
+    // Shift/Ctrl 조합에 따른 선택 갱신
+    void ClickChannel(uint32_t ch, bool shift, bool ctrl, bool onCheckbox);
+
+    // ---- 두 로그 시간 맞추기 ----
+    void AutoAlignCompare();
+    void NudgeAlign(int steps);
+    void ResetAlign();
+
     // 겹쳐보기에 실제로 그릴 채널 목록 (선택된 것 중 앞에서부터 kMaxOverlay 개)
     std::vector<uint32_t> OverlayChannels() const;
     // 현재 보이는 시간 구간에서의 값 범위. 확대하면 세로 눈금도 따라 좁혀진다.
@@ -190,6 +219,8 @@ private:
     Ptr<ID2D1HwndRenderTarget> rt_;
     Ptr<ID2D1SolidColorBrush> brush_;
     Ptr<IDWriteTextFormat> fUi_, fUiCenter_, fMono_, fMonoRight_, fSmall_, fSmallRight_, fTitle_;
+    // 이후 로그를 점선으로 그려 겹쳐도 구분되게 한다.
+    Ptr<ID2D1StrokeStyle> dashStyle_;
 
     LcDataset* ds_ = nullptr;          // 이전 로그 (비교하지 않을 때는 그냥 열린 로그)
     LcDataset* dsB_ = nullptr;         // 이후 로그
@@ -199,6 +230,9 @@ private:
     std::vector<double> cmpLo_, cmpHi_;    // 이전·이후를 함께 담는 값 범위
     std::vector<double> diffLo_, diffHi_;  // 차이 값의 범위
     CompareMode compareMode_ = CompareMode::Both;
+    std::vector<uint32_t> extraB_;     // 이후 로그에만 있는 채널
+    double compareOffset_ = 0.0;       // 이후 로그 시간에 더할 보정값
+    bool stagger_ = false;             // 겹칠 때 이후 선을 살짝 띄워 그린다
     std::wstring compareSummary_;
     std::wstring fileName_, message_;
     bool messageIsError_ = false;
@@ -218,6 +252,10 @@ private:
 
     PlotMode mode_ = PlotMode::Lanes;
     bool normalize_ = false;
+
+    std::vector<RailRow> railRows_;
+    std::vector<bool> groupOpen_;
+    int32_t anchorChannel_ = -1;   // Shift 범위 선택의 기준점
 
     std::wstring query_;
     int filter_ = -1;  // -1 = 전체, -2 = 달라진 채널만, 아니면 LcChannelType

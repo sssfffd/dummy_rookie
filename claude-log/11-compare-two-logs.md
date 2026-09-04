@@ -1,7 +1,7 @@
 # 11 · 이전/이후 로그 2개를 넣어 IO 별 차이 보기
 
 - **날짜** 2026-09-03
-- **커밋** 이 커밋
+- **커밋** [`115b910`](../../../commit/115b910) Compare two logs and show what changed per IO
 - **바뀐 파일** `src/core/include/logcore/logcore.h`, `src/core/dataset.h`, `src/core/dataset.cpp`, `src/core/logcore.cpp`, `src/core/text_util.h`, `src/core/text_util.cpp`, `src/app/app.cpp`, `src/app/app.h`, `src/app/main.cpp`, `tests/logcore_test.cpp`, `README.md`
 
 ## 요청
