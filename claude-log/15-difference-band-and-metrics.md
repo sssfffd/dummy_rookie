@@ -1,7 +1,7 @@
 # 15 · 점선 대신 차이 음영, 차이 척도 7가지
 
 - **날짜** 2026-09-04
-- **커밋** 이 커밋
+- **커밋** [`d34d773`](../../../commit/d34d773) Shade the gap between logs, and offer several ways to measure it
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `README.md`
 
 ## 요청

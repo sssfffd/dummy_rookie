@@ -150,7 +150,13 @@ private:
     // 그 결과로 컨트롤 줄 높이가 정해져야 나머지 영역을 계산할 수 있다.
     void RebuildTopButtons(float clientWidth);
     void RebuildRailButtons(const Rects& r);
-    void LayoutChildren(const Rects& r);
+    // 검색 상자는 직접 그린다. Win32 자식 컨트롤을 쓰면 Direct2D 가 매 프레임
+    // 창 전체를 다시 올리면서 그 위를 덮어써서 계속 깜빡인다.
+    D2D1_RECT_F SearchRect(const Rects& r) const;
+    void DrawSearchBox(const Rects& r);
+    void InsertSearchText(wchar_t c);
+    void OnSearchKey(WPARAM key);
+    void UpdateImePosition();
     float LaneHeight(LcChannelType t) const;
     float TotalLaneHeight() const;
     float TotalRailHeight() const;
@@ -263,15 +269,14 @@ private:
     void OnWheel(float x, float y, int delta, bool ctrl);
     void OnKey(WPARAM key);
     void OnButton(ButtonId id);
-    void OnSearchChanged();
 
     LRESULT HandleMessage(UINT msg, WPARAM wp, LPARAM lp);
 
     // ---- 상태 ----
     HWND hwnd_ = nullptr;
-    HWND search_ = nullptr;
-    HFONT searchFont_ = nullptr;
-    HBRUSH searchBg_ = nullptr;
+    bool searchFocused_ = false;
+    size_t caret_ = 0;                 // 검색 문자열 안에서의 글자 위치
+    unsigned long long caretTick_ = 0; // 깜빡임 기준 시각
     float dpi_ = 96.0f;
     bool dark_ = false;
     Palette pal_ = LightPalette();
@@ -317,6 +322,7 @@ private:
 
     float scrollPlot_ = 0.0f, scrollRail_ = 0.0f;
     float hoverX_ = -1.0f, hoverY_ = -1.0f;
+    bool hoverWasInPlot_ = false;   // 플롯 밖으로 나간 첫 순간에만 한 번 더 그리려고
     bool dragging_ = false, dragMoved_ = false, dragShift_ = false;
     float dragStartX_ = 0.0f;
     double dragT0_ = 0.0, dragT1_ = 0.0;

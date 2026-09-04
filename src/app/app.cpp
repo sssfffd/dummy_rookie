@@ -3,6 +3,7 @@
 #include <shobjidl.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <imm.h>
 
 #include <algorithm>
 #include <cmath>
@@ -13,9 +14,9 @@ namespace app {
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"LogScopeWindow";
-constexpr int kSearchCtrlId = 1001;
 constexpr UINT kMsgLoadDone = WM_APP + 1;
 constexpr UINT_PTR kTimerSpin = 1;
+constexpr UINT_PTR kTimerCaret = 2;
 
 // 파싱 스레드에서 불린다. 화면은 건드리지 않고 숫자만 남긴다.
 int LC_CALL LoadProgress(void* user, unsigned long long done, unsigned long long total) {
@@ -194,11 +195,6 @@ bool App::Create(HINSTANCE inst, int show, const wchar_t* initialPath,
         FreeLibrary(dwm);
     }
 
-    search_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                              WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_LEFT,
-                              0, 0, 10, 10, hwnd_,
-                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSearchCtrlId)),
-                              inst, nullptr);
     CreateTextFormats();
 
     ShowWindow(hwnd_, show);
@@ -218,22 +214,11 @@ void App::ApplySystemTheme() {
     dark_ = (st == ERROR_SUCCESS) && (light == 0);
     pal_ = dark_ ? DarkPalette() : LightPalette();
 
-    if (searchBg_) { DeleteObject(searchBg_); searchBg_ = nullptr; }
-    const D2D1_COLOR_F& s = pal_.surface;
-    searchBg_ = CreateSolidBrush(RGB(static_cast<int>(s.r * 255), static_cast<int>(s.g * 255),
-                                     static_cast<int>(s.b * 255)));
 }
 
 void App::UpdateDpi(UINT dpi) {
     if (dpi < 48 || dpi > 480) return;
     dpi_ = static_cast<float>(dpi);
-    if (searchFont_) { DeleteObject(searchFont_); searchFont_ = nullptr; }
-    searchFont_ = CreateFontW(-static_cast<int>(S(12.0f)), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
-                              FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    if (search_ && searchFont_) {
-        SendMessageW(search_, WM_SETFONT, reinterpret_cast<WPARAM>(searchFont_), TRUE);
-    }
     fUi_.reset();
     CreateTextFormats();
 }
@@ -336,13 +321,88 @@ Rects App::CalcRects() const {
     return r;
 }
 
-void App::LayoutChildren(const Rects& r) {
-    if (!search_) return;
-    const int pad = static_cast<int>(S(10.0f));
-    const int x = static_cast<int>(r.rail.left) + pad;
-    const int y = static_cast<int>(r.rail.top) + static_cast<int>(S(24.0f));
-    const int w = static_cast<int>(r.rail.right - r.rail.left) - pad * 2;
-    MoveWindow(search_, x, y, (std::max)(w, 10), static_cast<int>(S(metrics::kSearchH)), TRUE);
+D2D1_RECT_F App::SearchRect(const Rects& r) const {
+    const float pad = S(10.0f);
+    const float top = r.rail.top + S(6.0f) + S(16.0f);
+    return Rect(r.rail.left + pad, top, r.rail.right - pad, top + S(metrics::kSearchH));
+}
+
+void App::DrawSearchBox(const Rects& r) {
+    const D2D1_RECT_F box = SearchRect(r);
+    const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(box, S(4.0f), S(4.0f));
+    brush_->SetColor(pal_.surface);
+    rt_->FillRoundedRectangle(rr, brush_.get());
+    brush_->SetColor(searchFocused_ ? pal_.accent : pal_.hair);
+    rt_->DrawRoundedRectangle(rr, brush_.get(), searchFocused_ ? S(1.6f) : 1.0f);
+
+    const float tx = box.left + S(8.0f);
+    const D2D1_RECT_F textBox = Rect(tx, box.top, box.right - S(8.0f), box.bottom);
+    if (query_.empty() && !searchFocused_) {
+        DrawLabel(L"IO 이름으로 거르기", fUi_.get(), textBox, pal_.ink3);
+        return;
+    }
+    DrawLabel(query_, fUi_.get(), textBox, pal_.ink);
+
+    if (!searchFocused_) return;
+    // 글자 커서. 0.5초 주기로 깜빡인다.
+    if (((GetTickCount64() - caretTick_) / 530) % 2 == 0) {
+        const std::wstring upto = query_.substr(0, (std::min)(caret_, query_.size()));
+        const float cx = tx + MeasureText(dw_.get(), upto, fUi_.get());
+        StrokeLine(Px(cx), box.top + S(4.0f), Px(cx), box.bottom - S(4.0f), pal_.ink, S(1.4f));
+    }
+}
+
+// 한글은 IME 가 조합해서 WM_CHAR 로 완성된 글자를 보내 준다. 조합 중인 글자가
+// 뜨는 위치만 글자 커서 옆으로 옮겨 준다.
+void App::UpdateImePosition() {
+    if (!searchFocused_) return;
+    const Rects r = CalcRects();
+    const D2D1_RECT_F box = SearchRect(r);
+    const std::wstring upto = query_.substr(0, (std::min)(caret_, query_.size()));
+    const float cx = box.left + S(8.0f) + MeasureText(dw_.get(), upto, fUi_.get());
+    if (HIMC imc = ImmGetContext(hwnd_)) {
+        COMPOSITIONFORM cf{};
+        cf.dwStyle = CFS_POINT;
+        cf.ptCurrentPos.x = static_cast<LONG>(cx);
+        cf.ptCurrentPos.y = static_cast<LONG>(box.top);
+        ImmSetCompositionWindow(imc, &cf);
+        ImmReleaseContext(hwnd_, imc);
+    }
+}
+
+void App::InsertSearchText(wchar_t c) {
+    if (query_.size() >= 128) return;
+    caret_ = (std::min)(caret_, query_.size());
+    query_.insert(query_.begin() + static_cast<std::ptrdiff_t>(caret_), c);
+    ++caret_;
+    scrollRail_ = 0.0f;
+    caretTick_ = GetTickCount64();
+}
+
+void App::OnSearchKey(WPARAM key) {
+    caret_ = (std::min)(caret_, query_.size());
+    switch (key) {
+        case VK_LEFT:  if (caret_ > 0) --caret_; break;
+        case VK_RIGHT: if (caret_ < query_.size()) ++caret_; break;
+        case VK_HOME:  caret_ = 0; break;
+        case VK_END:   caret_ = query_.size(); break;
+        case VK_DELETE:
+            if (caret_ < query_.size()) {
+                query_.erase(query_.begin() + static_cast<std::ptrdiff_t>(caret_));
+                scrollRail_ = 0.0f;
+            }
+            break;
+        case VK_ESCAPE:
+            if (query_.empty()) { searchFocused_ = false; }
+            else { query_.clear(); caret_ = 0; scrollRail_ = 0.0f; }
+            break;
+        case VK_RETURN:
+            searchFocused_ = false;
+            break;
+        default:
+            return;
+    }
+    caretTick_ = GetTickCount64();
 }
 
 float App::LaneHeight(LcChannelType t) const {
@@ -1460,7 +1520,6 @@ void App::Render() {
     RebuildTopButtons(static_cast<float>(rc.right - rc.left));
     const Rects r = CalcRects();
     RebuildRailButtons(r);
-    LayoutChildren(r);
 
     rt_->BeginDraw();
     rt_->Clear(pal_.plane);
@@ -1472,6 +1531,10 @@ void App::Render() {
     DrawControls(r);
     DrawStatus(r);
     if (IsLoading()) DrawLoadingOverlay(r);
+
+    // 글자 커서가 깜빡이려면 검색 중일 때만 주기적으로 다시 그리면 된다.
+    if (searchFocused_) SetTimer(hwnd_, kTimerCaret, 260, nullptr);
+    else KillTimer(hwnd_, kTimerCaret);
 
     if (rt_->EndDraw() == static_cast<HRESULT>(D2DERR_RECREATE_TARGET)) DiscardDeviceResources();
 }
@@ -1528,6 +1591,7 @@ void App::DrawRail(const Rects& r) {
               Rect(r.rail.left + S(10.0f), r.rail.top + S(4.0f),
                    r.rail.right, r.rail.top + S(20.0f)),
               pal_.ink3);
+    DrawSearchBox(r);
 
     // 선택 개수는 검색 라벨과 같은 줄 오른쪽 끝에 둔다. 아래 버튼 줄에 두면
     // "펴기 / 접기" 와 자리를 다툰다 (실제로 겹쳤다).
@@ -2504,6 +2568,31 @@ void App::OnButton(ButtonId id) {
 
 void App::OnLButtonDown(float x, float y, bool shift) {
     SetFocus(hwnd_);
+
+    // 검색 상자 안이면 그 자리에 글자 커서를 놓는다.
+    {
+        const Rects rr = CalcRects();
+        const D2D1_RECT_F box = SearchRect(rr);
+        if (Inside(box, x, y)) {
+            searchFocused_ = true;
+            caretTick_ = GetTickCount64();
+            const float tx = box.left + S(8.0f);
+            caret_ = query_.size();
+            for (size_t i = 0; i <= query_.size(); ++i) {
+                if (tx + MeasureText(dw_.get(), query_.substr(0, i), fUi_.get()) >= x) {
+                    caret_ = (i > 0) ? i - 1 : 0;
+                    break;
+                }
+            }
+            UpdateImePosition();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+        if (searchFocused_) {
+            searchFocused_ = false;
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+    }
     for (const Button& b : buttons_) {
         if (!b.isLabel && b.id != ButtonId::None && Inside(b.rect, x, y)) {
             OnButton(b.id);
@@ -2608,7 +2697,14 @@ void App::OnMouseMove(float x, float y, bool /*dragging*/) {
             ClampView(dragT0_ - dt, dragT1_ - dt);
         }
     }
-    if (hotChanged || dragging_ || ds_) InvalidateRect(hwnd_, nullptr, FALSE);
+    // 다시 그릴 이유가 있을 때만 그린다. 예전에는 데이터가 열려 있기만 하면
+    // 마우스가 어디로 움직이든 창 전체를 다시 그렸다.
+    const Rects rc = CalcRects();
+    const bool overPlot = ds_ && Inside(rc.plot, x, y);
+    if (hotChanged || dragging_ || overPlot || hoverWasInPlot_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    hoverWasInPlot_ = overPlot;
 }
 
 void App::OnWheel(float x, float y, int delta, bool ctrl) {
@@ -2658,14 +2754,6 @@ void App::OnKey(WPARAM key) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void App::OnSearchChanged() {
-    wchar_t buf[128] = {0};
-    GetWindowTextW(search_, buf, 127);
-    query_ = buf;
-    scrollRail_ = 0.0f;
-    InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
 // ===========================================================================
 // 메시지
 // ===========================================================================
@@ -2711,7 +2799,10 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_TIMER:
-            if (wp == kTimerSpin) { InvalidateRect(hwnd_, nullptr, FALSE); return 0; }
+            if (wp == kTimerSpin || wp == kTimerCaret) {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
             break;
 
         case WM_SETTINGCHANGE:
@@ -2748,8 +2839,36 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
+        case WM_CHAR:
+            if (searchFocused_) {
+                const wchar_t c = static_cast<wchar_t>(wp);
+                if (c == 8) {   // 백스페이스
+                    caret_ = (std::min)(caret_, query_.size());
+                    if (caret_ > 0) {
+                        query_.erase(query_.begin() + static_cast<std::ptrdiff_t>(caret_ - 1));
+                        --caret_;
+                        scrollRail_ = 0.0f;
+                        caretTick_ = GetTickCount64();
+                    }
+                } else if (c >= 0x20) {
+                    InsertSearchText(c);
+                }
+                UpdateImePosition();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+            break;
+
         case WM_KEYDOWN:
             if (wp == 'O' && (GetKeyState(VK_CONTROL) & 0x8000)) { OpenFileDialog(); return 0; }
+            if (searchFocused_) {
+                // 검색 중에는 방향키가 글자 커서를 옮긴다. 시간축으로 새어 나가면
+                // 글자를 지우려다 그래프가 움직인다.
+                OnSearchKey(wp);
+                UpdateImePosition();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
             OnKey(wp);
             return 0;
 
@@ -2772,36 +2891,17 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        case WM_COMMAND:
-            if (LOWORD(wp) == kSearchCtrlId && HIWORD(wp) == EN_CHANGE) {
-                OnSearchChanged();
-                return 0;
-            }
-            break;
-
-        case WM_CTLCOLOREDIT: {
-            HDC dc = reinterpret_cast<HDC>(wp);
-            const D2D1_COLOR_F& fg = pal_.ink;
-            SetTextColor(dc, RGB(static_cast<int>(fg.r * 255), static_cast<int>(fg.g * 255),
-                                 static_cast<int>(fg.b * 255)));
-            const D2D1_COLOR_F& bg = pal_.surface;
-            SetBkColor(dc, RGB(static_cast<int>(bg.r * 255), static_cast<int>(bg.g * 255),
-                               static_cast<int>(bg.b * 255)));
-            return reinterpret_cast<LRESULT>(searchBg_);
-        }
-
         case WM_DESTROY:
             // 읽는 중이면 멈추라고 알리고 스레드가 끝날 때까지 기다린다. 기다리지
             // 않으면 스레드가 사라진 창에 메시지를 보내려 한다.
             if (loadJob_) loadJob_->cancel.store(true);
             KillTimer(hwnd_, kTimerSpin);
+            KillTimer(hwnd_, kTimerCaret);
             if (loadThread_.joinable()) loadThread_.join();
             loadJob_.reset();
             CloseCompare();
             CloseDataset();
             DiscardDeviceResources();
-            if (searchFont_) { DeleteObject(searchFont_); searchFont_ = nullptr; }
-            if (searchBg_) { DeleteObject(searchBg_); searchBg_ = nullptr; }
             PostQuitMessage(0);
             return 0;
 

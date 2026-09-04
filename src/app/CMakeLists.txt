@@ -17,7 +17,8 @@ target_link_libraries(logscope PRIVATE logcore logscope_hardening)
 #   shell32     : 드래그 앤 드롭
 #   user32/gdi32/advapi32 : 창, 검색 상자 글꼴, 테마 설정 읽기
 #   uuid        : CLSID_FileOpenDialog 등 인터페이스 GUID
-target_link_libraries(logscope PRIVATE d2d1 dwrite ole32 shell32 user32 gdi32 advapi32 uuid)
+#   imm32       : 한글 IME 조합창 위치 지정
+target_link_libraries(logscope PRIVATE d2d1 dwrite ole32 shell32 user32 gdi32 advapi32 uuid imm32)
 
 if(MSVC)
   target_sources(logscope PRIVATE logscope.manifest)
