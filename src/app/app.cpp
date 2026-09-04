@@ -14,6 +14,16 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"LogScopeWindow";
 constexpr int kSearchCtrlId = 1001;
+constexpr UINT kMsgLoadDone = WM_APP + 1;
+constexpr UINT_PTR kTimerSpin = 1;
+
+// 파싱 스레드에서 불린다. 화면은 건드리지 않고 숫자만 남긴다.
+int LC_CALL LoadProgress(void* user, unsigned long long done, unsigned long long total) {
+    auto* job = static_cast<LoadJob*>(user);
+    job->done.store(done, std::memory_order_relaxed);
+    job->total.store(total, std::memory_order_relaxed);
+    return job->cancel.load(std::memory_order_relaxed) ? 0 : 1;
+}
 
 // 시간축 눈금 후보 (밀리초). 시간 형식일 때 사람이 읽기 좋은 간격만 쓴다.
 const double kTimeSteps[] = {1, 2, 5, 10, 20, 50, 100, 200, 500, 1e3, 2e3, 5e3,
@@ -42,6 +52,25 @@ struct Path {
         return SUCCEEDED(sink->Close());
     }
 };
+
+float MeasureText(IDWriteFactory* dw, const std::wstring& s, IDWriteTextFormat* f) {
+    if (!dw || !f || s.empty()) return 0.0f;
+    Ptr<IDWriteTextLayout> layout;
+    if (FAILED(dw->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.size()), f,
+                                    4096.0f, 64.0f, layout.put()))) {
+        return 0.0f;
+    }
+    DWRITE_TEXT_METRICS m{};
+    if (FAILED(layout->GetMetrics(&m))) return 0.0f;
+    return m.widthIncludingTrailingWhitespace;
+}
+
+// 폭이 좁으면 뒤를 잘라 말줄임표를 붙인다.
+std::wstring Ellipsize(IDWriteFactory* dw, std::wstring s, IDWriteTextFormat* f, float maxw) {
+    if (MeasureText(dw, s, f) <= maxw) return s;
+    while (s.size() > 1 && MeasureText(dw, s + L"…", f) > maxw) s.pop_back();
+    return s + L"…";
+}
 
 float Px(float v) { return std::floor(v) + 0.5f; }
 
@@ -355,6 +384,173 @@ bool App::ChannelVisibleInList(uint32_t ch) const {
 // 데이터
 // ===========================================================================
 
+
+// ===========================================================================
+// 배경에서 파일 읽기
+//
+// lc_open_file 은 큰 xlsx 에서 몇 초가 걸린다. UI 스레드에서 부르면 그동안 창이
+// 메시지를 처리하지 못해 Windows 가 "응답 없음" 으로 흐리게 만든다. 사용자
+// 입장에서는 읽는 중인지 죽은 것인지 알 방법이 없다. 그래서 읽기는 따로 돌리고,
+// 화면에는 경과 시간과 읽은 줄 수를 계속 갱신해서 보여 준다.
+// ===========================================================================
+
+void App::BeginLoad(const std::wstring& path, int slot) {
+    if (IsLoading()) {
+        // 이미 읽는 중이면 줄을 세운다. 그냥 버리면 파일 두 개를 한꺼번에
+        // 떨어뜨렸을 때 두 번째가 조용히 사라진다.
+        loadQueue_.emplace_back(path, slot);
+        return;
+    }
+    if (slot == 1 && !ds_) {
+        message_ = L"먼저 이전 로그를 여세요. 그 다음에 비교할 이후 로그를 엽니다.";
+        messageIsError_ = true;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    auto job = std::make_shared<LoadJob>();
+    job->path = path;
+    job->orientation = orientation_;
+    job->slot = slot;
+    loadJob_ = job;
+    loadStartTick_ = GetTickCount64();
+
+    if (loadThread_.joinable()) loadThread_.join();
+    HWND hwnd = hwnd_;
+    loadThread_ = std::thread([job, hwnd]() {
+        LcOpenOptions opt{};
+        lc_default_options(&opt);
+        opt.orientation = job->orientation;
+        opt.progress = &LoadProgress;
+        opt.progress_user = job.get();
+
+        LcDataset* ds = nullptr;
+        job->status = lc_open_file(job->path.c_str(), &opt, &ds);
+        job->ds = ds;
+        // shared_ptr 을 하나 더 띄워 UI 스레드가 받을 때까지 살려 둔다.
+        auto* handoff = new std::shared_ptr<LoadJob>(job);
+        if (!PostMessageW(hwnd, kMsgLoadDone, 0, reinterpret_cast<LPARAM>(handoff))) {
+            // 창이 이미 없어졌다. 우리가 정리한다.
+            if (ds) lc_close(ds);
+            delete handoff;
+        }
+    });
+
+    SetTimer(hwnd_, kTimerSpin, 80, nullptr);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::FinishLoad(const std::shared_ptr<LoadJob>& job) {
+    KillTimer(hwnd_, kTimerSpin);
+    loadJob_.reset();
+    if (loadThread_.joinable()) loadThread_.join();
+
+    // 대기열이 있으면 이번 것을 처리한 뒤 이어서 읽는다.
+    auto start_queued = [this]() {
+        if (loadQueue_.empty()) return;
+        const auto next = loadQueue_.front();
+        loadQueue_.erase(loadQueue_.begin());
+        BeginLoad(next.first, next.second);
+    };
+
+    if (job->status != LC_OK || !job->ds) {
+        if (job->ds) lc_close(job->ds);
+        message_ = (job->slot == 1 ? std::wstring(L"이후 로그를 열지 못했습니다 — ")
+                                   : std::wstring(L"로그를 열지 못했습니다 — ")) +
+                   lc_status_text(job->status);
+        messageIsError_ = true;
+        loadQueue_.clear();   // 앞의 것이 실패했으면 뒤따르는 비교도 의미가 없다
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    const size_t slash = job->path.find_last_of(L"\\/");
+    const std::wstring name =
+        (slash == std::wstring::npos) ? job->path : job->path.substr(slash + 1);
+
+    if (job->slot == 1) {
+        const std::wstring keep = job->path;
+        CloseCompare();
+        dsB_ = job->ds;
+        fileNameB_ = name;
+        lastPathB_ = keep;
+        RebuildComparison();
+    } else {
+        CloseCompare();
+        CloseDataset();
+        ds_ = job->ds;
+        lastPath_ = job->path;
+        fileName_ = name;
+
+        const uint32_t n = lc_channel_count(ds_);
+        // 아무것도 선택하지 않은 채로 시작한다. 200채널을 한꺼번에 그려 놓고
+        // 지우는 것보다, 볼 것을 골라 담는 쪽이 빠르다.
+        selected_.assign(n, false);
+        anchorChannel_ = -1;
+        groupOpen_.clear();
+        ResetViewToData();
+
+        message_ = lc_notes(ds_);
+        if (!message_.empty()) message_ += L" ";
+        message_ += Fmt(L"채널 %u개를 읽었습니다. 왼쪽에서 볼 IO 를 고르세요.", n);
+        messageIsError_ = false;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    start_queued();
+}
+
+void App::DrawLoadingOverlay(const Rects& r) {
+    const float cx = (r.plot.left + r.plot.right) * 0.5f;
+    const float cy = (r.plot.top + r.plot.bottom) * 0.5f;
+    const float w = S(340.0f), h = S(104.0f);
+    const D2D1_RECT_F box = Rect(cx - w * 0.5f, cy - h * 0.5f, cx + w * 0.5f, cy + h * 0.5f);
+
+    Fill(r.plot, D2D1::ColorF(pal_.surface.r, pal_.surface.g, pal_.surface.b, 0.82f));
+    const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(box, S(8.0f), S(8.0f));
+    brush_->SetColor(pal_.panel);
+    rt_->FillRoundedRectangle(rr, brush_.get());
+    brush_->SetColor(pal_.hair);
+    rt_->DrawRoundedRectangle(rr, brush_.get(), 1.0f);
+
+    // 도는 표시. 이게 돌고 있으면 적어도 멈춘 것은 아니다.
+    const unsigned long long ms = GetTickCount64() - loadStartTick_;
+    const float angle = static_cast<float>(ms % 1000) / 1000.0f * 6.2831853f;
+    const float rad = S(9.0f);
+    const float sx = box.left + S(22.0f), sy = box.top + S(24.0f);
+    for (int i = 0; i < 8; ++i) {
+        const float a = angle + static_cast<float>(i) * 0.7853982f;
+        const float alpha = 0.15f + 0.85f * (static_cast<float>(i) / 8.0f);
+        const D2D1_RECT_F dot =
+            Rect(sx + std::cos(a) * rad - S(1.6f), sy + std::sin(a) * rad - S(1.6f),
+                 sx + std::cos(a) * rad + S(1.6f), sy + std::sin(a) * rad + S(1.6f));
+        Fill(dot, D2D1::ColorF(pal_.accent.r, pal_.accent.g, pal_.accent.b, alpha));
+    }
+
+    const std::wstring name =
+        loadJob_ ? loadJob_->path.substr(loadJob_->path.find_last_of(L"\\/") + 1)
+                 : std::wstring();
+    DrawLabel(Ellipsize(dw_.get(), name, fMono_.get(), w - S(60.0f)), fMono_.get(),
+              Rect(box.left + S(42.0f), box.top + S(12.0f), box.right - S(14.0f),
+                   box.top + S(36.0f)),
+              pal_.ink);
+
+    const unsigned long long rows = loadJob_ ? loadJob_->done.load() : 0;
+    std::wstring detail = Fmt(L"%.1f초 경과", static_cast<double>(ms) / 1000.0);
+    if (rows > 0) detail += Fmt(L" · %llu줄 읽음", rows);
+    DrawLabel(detail, fSmall_.get(),
+              Rect(box.left + S(42.0f), box.top + S(38.0f), box.right - S(14.0f),
+                   box.top + S(58.0f)),
+              pal_.ink2);
+    DrawLabel(L"읽는 동안에도 창은 그대로 움직입니다.", fSmall_.get(),
+              Rect(box.left + S(42.0f), box.top + S(58.0f), box.right - S(14.0f),
+                   box.top + S(76.0f)),
+              pal_.ink3);
+
+    for (const Button& b : buttons_) {
+        if (b.id == ButtonId::CancelLoad) DrawButton(b, hotButton_ == b.id);
+    }
+}
+
 void App::CloseDataset() {
     if (ds_) { lc_close(ds_); ds_ = nullptr; }
     matchB_.clear();
@@ -364,44 +560,20 @@ void App::CloseDataset() {
     scrollPlot_ = scrollRail_ = 0.0f;
 }
 
-void App::LoadPath(const std::wstring& path) {
-    LcOpenOptions opt{};
-    lc_default_options(&opt);
-    opt.orientation = orientation_;
+void App::LoadPath(const std::wstring& path) { BeginLoad(path, 0); }
 
-    LcDataset* ds = nullptr;
-    const LcStatus st = lc_open_file(path.c_str(), &opt, &ds);
-    if (st != LC_OK) {
-        message_ = lc_status_text(st);
-        messageIsError_ = true;
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        return;
-    }
-
-    CloseDataset();
-    ds_ = ds;
-    lastPath_ = path;
-
-    const size_t slash = path.find_last_of(L"\\/");
-    fileName_ = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
-
-    const uint32_t n = lc_channel_count(ds_);
-    // 아무것도 선택하지 않은 채로 시작한다. 200채널을 한꺼번에 그려 놓고 지우는
-    // 것보다, 볼 것을 골라 담는 쪽이 빠르다.
-    selected_.assign(n, false);
-    anchorChannel_ = -1;
-    groupOpen_.clear();
-
-    // 이전 로그가 바뀌었으므로 채널 매칭을 다시 맞춘다.
-    if (dsB_) RebuildComparison();
-
-    message_ = lc_notes(ds_);
-    if (!message_.empty()) message_ += L" ";
-    message_ += Fmt(L"채널 %u개를 읽었습니다. 왼쪽에서 볼 IO 를 고르세요.", n);
-    messageIsError_ = false;
-
-    ResetViewToData();
-    InvalidateRect(hwnd_, nullptr, FALSE);
+void App::CloseCompare() {
+    if (dsB_) { lc_close(dsB_); dsB_ = nullptr; }
+    fileNameB_.clear();
+    lastPathB_.clear();
+    extraB_.clear();
+    compareOffset_ = 0.0;
+    matchB_.clear();
+    diffCount_.clear();
+    cmpLo_.clear(); cmpHi_.clear();
+    diffLo_.clear(); diffHi_.clear();
+    compareSummary_.clear();
+    if (filter_ == -2) filter_ = -1;
 }
 
 std::wstring App::PickLogFile(const wchar_t* title) {
@@ -434,24 +606,6 @@ void App::OpenFileDialog() {
     if (!path.empty()) LoadPath(path);
 }
 
-
-// ===========================================================================
-// 두 로그 비교
-// ===========================================================================
-
-void App::CloseCompare() {
-    if (dsB_) { lc_close(dsB_); dsB_ = nullptr; }
-    fileNameB_.clear();
-    extraB_.clear();
-    compareOffset_ = 0.0;
-    matchB_.clear();
-    diffCount_.clear();
-    cmpLo_.clear(); cmpHi_.clear();
-    diffLo_.clear(); diffHi_.clear();
-    compareSummary_.clear();
-    if (filter_ == -2) filter_ = -1;
-}
-
 void App::OpenCompareDialog() {
     if (!ds_) {
         message_ = L"먼저 이전 로그를 여세요. 그 다음에 비교할 이후 로그를 엽니다.";
@@ -463,26 +617,7 @@ void App::OpenCompareDialog() {
     if (!path.empty()) LoadComparePath(path);
 }
 
-void App::LoadComparePath(const std::wstring& path) {
-    LcOpenOptions opt{};
-    lc_default_options(&opt);
-    opt.orientation = orientation_;
-
-    LcDataset* ds = nullptr;
-    const LcStatus st = lc_open_file(path.c_str(), &opt, &ds);
-    if (st != LC_OK) {
-        message_ = std::wstring(L"이후 로그를 열지 못했습니다 — ") + lc_status_text(st);
-        messageIsError_ = true;
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        return;
-    }
-    CloseCompare();
-    dsB_ = ds;
-    const size_t slash = path.find_last_of(L"\\/");
-    fileNameB_ = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
-    RebuildComparison();
-    InvalidateRect(hwnd_, nullptr, FALSE);
-}
+void App::LoadComparePath(const std::wstring& path) { BeginLoad(path, 1); }
 
 // 이후 로그를 이전 로그의 시각 t 에서 읽는다.
 //
@@ -671,12 +806,6 @@ void App::RebuildRailRows() {
 void App::ClickChannel(uint32_t ch, bool shift, bool ctrl, bool onCheckbox) {
     if (!ds_ || ch >= selected_.size()) return;
 
-    if (onCheckbox || ctrl) {
-        // 체크박스와 Ctrl+클릭은 그 하나만 뒤집는다.
-        selected_[ch] = !selected_[ch];
-        anchorChannel_ = static_cast<int32_t>(ch);
-        return;
-    }
     if (shift && anchorChannel_ >= 0) {
         // 기준점부터 여기까지 한 번에 켠다. 목록에 보이는 것만 대상으로 한다.
         const uint32_t a = static_cast<uint32_t>(anchorChannel_);
@@ -687,9 +816,12 @@ void App::ClickChannel(uint32_t ch, bool shift, bool ctrl, bool onCheckbox) {
         }
         return;
     }
-    // 그냥 클릭은 그 하나만 남긴다.
-    for (size_t i = 0; i < selected_.size(); ++i) selected_[i] = false;
-    selected_[ch] = true;
+    // 클릭은 그 채널만 켜고 끈다. 이미 고른 것들은 건드리지 않는다 — 하나를
+    // 더 보려고 눌렀는데 보던 것이 사라지면 쓸 수가 없다. 끄고 싶으면 그 채널을
+    // 다시 누르면 된다.
+    (void)onCheckbox;
+    (void)ctrl;
+    selected_[ch] = !selected_[ch];
     anchorChannel_ = static_cast<int32_t>(ch);
 }
 
@@ -981,25 +1113,6 @@ std::wstring App::FormatValue(uint32_t ch, double v) const {
 namespace app {
 namespace {
 
-float MeasureText(IDWriteFactory* dw, const std::wstring& s, IDWriteTextFormat* f) {
-    if (!dw || !f || s.empty()) return 0.0f;
-    Ptr<IDWriteTextLayout> layout;
-    if (FAILED(dw->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.size()), f,
-                                    4096.0f, 64.0f, layout.put()))) {
-        return 0.0f;
-    }
-    DWRITE_TEXT_METRICS m{};
-    if (FAILED(layout->GetMetrics(&m))) return 0.0f;
-    return m.widthIncludingTrailingWhitespace;
-}
-
-// 폭이 좁으면 뒤를 잘라 말줄임표를 붙인다.
-std::wstring Ellipsize(IDWriteFactory* dw, std::wstring s, IDWriteTextFormat* f, float maxw) {
-    if (MeasureText(dw, s, f) <= maxw) return s;
-    while (s.size() > 1 && MeasureText(dw, s + L"…", f) > maxw) s.pop_back();
-    return s + L"…";
-}
-
 }  // namespace
 
 void App::Fill(const D2D1_RECT_F& r, const D2D1_COLOR_F& c) {
@@ -1054,9 +1167,13 @@ void App::RebuildButtons(const Rects& r) {
         buttons_.push_back(std::move(b));
     };
 
-    add(ButtonId::Open, L"이전 로그 열기", true, false, S(4.0f));
-    add(ButtonId::OpenCompare, L"이후 로그 열기", false, false, S(4.0f));
-    if (HasCompare()) add(ButtonId::CloseCompare, L"비교 해제", false, false, S(14.0f));
+    if (IsLoading()) {
+        add(ButtonId::CancelLoad, L"읽기 취소", false, false, S(14.0f));
+    } else {
+        add(ButtonId::Open, L"이전 로그 열기", true, false, S(4.0f));
+        add(ButtonId::OpenCompare, L"이후 로그 열기", false, false, S(4.0f));
+        if (HasCompare()) add(ButtonId::CloseCompare, L"비교 해제", false, false, S(14.0f));
+    }
 
     // 아래 컨트롤 줄
     const float ctlH = S(24.0f);
@@ -1152,6 +1269,7 @@ void App::Render() {
     DrawToolbar(r);
     DrawControls(r);
     DrawStatus(r);
+    if (IsLoading()) DrawLoadingOverlay(r);
 
     if (rt_->EndDraw() == static_cast<HRESULT>(D2DERR_RECREATE_TARGET)) DiscardDeviceResources();
 }
@@ -1217,21 +1335,23 @@ void App::DrawRail(const Rects& r) {
                    r.rail.right, r.rail.top + S(20.0f)),
               pal_.ink3);
 
+    // 선택 개수는 검색 라벨과 같은 줄 오른쪽 끝에 둔다. 아래 버튼 줄에 두면
+    // "펴기 / 접기" 와 자리를 다툰다 (실제로 겹쳤다).
+    if (ds_) {
+        uint32_t sel = 0;
+        for (bool b : selected_) sel += b ? 1u : 0u;
+        DrawLabel(Fmt(L"%u / %u 선택", sel, lc_channel_count(ds_)), fSmallRight_.get(),
+                  Rect(r.rail.left + S(60.0f), r.rail.top + S(4.0f),
+                       r.rail.right - S(10.0f), r.rail.top + S(20.0f)),
+                  sel ? pal_.accent : pal_.ink3);
+    }
+
     for (const Button& b : buttons_) {
         if (b.rect.top >= r.rail.top && b.rect.bottom <= r.railList.top) {
             DrawButton(b, hotButton_ == b.id);
         }
     }
     if (!ds_) return;
-
-    // 선택 개수는 목록 바로 위 오른쪽에. 버튼들과 같은 줄이지만 오른쪽 끝이라
-    // 겹치지 않는다.
-    uint32_t sel = 0;
-    for (bool b : selected_) sel += b ? 1u : 0u;
-    DrawLabel(Fmt(L"%u / %u 선택", sel, lc_channel_count(ds_)), fSmallRight_.get(),
-              Rect(r.rail.left, r.railList.top - S(28.0f), r.rail.right - S(10.0f),
-                   r.railList.top - S(8.0f)),
-              sel ? pal_.ink2 : pal_.ink3);
 
     RebuildRailRows();
 
@@ -2050,6 +2170,9 @@ void App::DrawStatus(const Rects& r) {
 void App::OnButton(ButtonId id) {
     switch (id) {
         case ButtonId::Open: OpenFileDialog(); break;
+        case ButtonId::CancelLoad:
+            if (loadJob_) loadJob_->cancel.store(true);
+            break;
         case ButtonId::OpenCompare: OpenCompareDialog(); break;
         case ButtonId::CloseCompare:
             CloseCompare();
@@ -2071,7 +2194,12 @@ void App::OnButton(ButtonId id) {
                                                                  : LC_ORIENT_COLS;
             if (orientation_ == want) break;
             orientation_ = want;
-            if (!lastPath_.empty()) LoadPath(lastPath_);
+            // 두 로그를 같은 배치로 읽어야 채널이 맞는다. 비교 중이면 둘 다.
+            if (!lastPath_.empty()) {
+                const std::wstring b = lastPathB_;
+                LoadPath(lastPath_);
+                if (!b.empty()) LoadComparePath(b);
+            }
             break;
         }
         case ButtonId::ModeLanes:
@@ -2307,6 +2435,19 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
+        case kMsgLoadDone: {
+            auto* handoff = reinterpret_cast<std::shared_ptr<LoadJob>*>(lp);
+            if (handoff) {
+                FinishLoad(*handoff);
+                delete handoff;
+            }
+            return 0;
+        }
+
+        case WM_TIMER:
+            if (wp == kTimerSpin) { InvalidateRect(hwnd_, nullptr, FALSE); return 0; }
+            break;
+
         case WM_SETTINGCHANGE:
             ApplySystemTheme();
             InvalidateRect(hwnd_, nullptr, FALSE);
@@ -2384,6 +2525,12 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_DESTROY:
+            // 읽는 중이면 멈추라고 알리고 스레드가 끝날 때까지 기다린다. 기다리지
+            // 않으면 스레드가 사라진 창에 메시지를 보내려 한다.
+            if (loadJob_) loadJob_->cancel.store(true);
+            KillTimer(hwnd_, kTimerSpin);
+            if (loadThread_.joinable()) loadThread_.join();
+            loadJob_.reset();
             CloseCompare();
             CloseDataset();
             DiscardDeviceResources();

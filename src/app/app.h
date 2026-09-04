@@ -6,7 +6,10 @@
 #include <d2d1.h>
 #include <dwrite.h>
 
+#include <atomic>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "logcore/logcore.h"
@@ -41,7 +44,21 @@ enum class ButtonId {
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState,
     FilterChanged,
     GroupsExpand, GroupsCollapse,
-    AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger
+    AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger,
+    CancelLoad
+};
+
+// 파일 읽기는 별도 스레드에서 한다. UI 스레드에서 하면 큰 파일에서 창이 통째로
+// 멎어 버려서, 읽는 중인지 죽은 것인지 구분할 수가 없다.
+struct LoadJob {
+    std::wstring path;
+    uint32_t orientation = 0;
+    int slot = 0;                    // 0 = 이전 로그, 1 = 이후 로그
+    LcStatus status = LC_OK;
+    LcDataset* ds = nullptr;
+    std::atomic<unsigned long long> done{0};   // 지금까지 읽은 줄 수
+    std::atomic<unsigned long long> total{0};
+    std::atomic<bool> cancel{false};
 };
 
 // 레인: 채널마다 한 줄, 각자 세로 눈금. 파형을 훑어볼 때.
@@ -138,6 +155,11 @@ private:
 
     // ---- 데이터 ----
     void LoadPath(const std::wstring& path);
+    // ---- 배경에서 읽기 ----
+    void BeginLoad(const std::wstring& path, int slot);
+    void FinishLoad(const std::shared_ptr<LoadJob>& job);
+    bool IsLoading() const { return loadJob_ != nullptr; }
+    void DrawLoadingOverlay(const Rects& r);
     void CloseDataset();
     void OpenFileDialog();
     std::wstring PickLogFile(const wchar_t* title);
@@ -222,6 +244,13 @@ private:
     // 이후 로그를 점선으로 그려 겹쳐도 구분되게 한다.
     Ptr<ID2D1StrokeStyle> dashStyle_;
 
+    std::shared_ptr<LoadJob> loadJob_;
+    std::thread loadThread_;
+    unsigned long long loadStartTick_ = 0;
+    // 읽기는 한 번에 하나만 돈다. 파일 두 개를 한꺼번에 떨어뜨렸거나 배치를
+    // 바꿔 둘 다 다시 읽어야 할 때를 위해 대기열을 둔다.
+    std::vector<std::pair<std::wstring, int>> loadQueue_;
+
     LcDataset* ds_ = nullptr;          // 이전 로그 (비교하지 않을 때는 그냥 열린 로그)
     LcDataset* dsB_ = nullptr;         // 이후 로그
     std::wstring fileNameB_;
@@ -238,7 +267,7 @@ private:
     bool messageIsError_ = false;
     std::vector<bool> selected_;
     uint32_t orientation_ = LC_ORIENT_AUTO;
-    std::wstring lastPath_;
+    std::wstring lastPath_, lastPathB_;
 
     double t0_ = 0.0, t1_ = 1.0;
     double curA_ = 0.0, curB_ = 0.0;

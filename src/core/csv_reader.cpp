@@ -91,6 +91,7 @@ LcStatus read_delimited(const uint8_t* data, size_t size, const Limits& lim, Gri
     Row row;
     std::wstring field;
     bool in_quote = false, quoted_field = false;
+    bool cancelled = false;
     uint64_t cells = 0;
 
     auto end_field = [&]() {
@@ -103,6 +104,11 @@ LcStatus read_delimited(const uint8_t* data, size_t size, const Limits& lim, Gri
         cells += row.size();
         if (cells > lim.max_cells) return false;
         if (out.size() >= lim.max_channels + 1u) return false;
+        // 4096줄마다 한 번. 매 줄 부르면 알림 자체가 파싱보다 비싸진다.
+        if ((out.size() & 0xFFFu) == 0 && !lim.progress.report(out.size(), 0)) {
+            cancelled = true;
+            return false;
+        }
         out.push_back(std::move(row));
         row.clear();
         return true;
@@ -121,14 +127,16 @@ LcStatus read_delimited(const uint8_t* data, size_t size, const Limits& lim, Gri
         }
         if (c == L'"') { in_quote = true; quoted_field = true; }
         else if (c == delim) { end_field(); }
-        else if (c == L'\n') { if (!end_row()) return LC_ERR_TOO_LARGE; }
+        else if (c == L'\n') {
+            if (!end_row()) return cancelled ? LC_ERR_CANCELLED : LC_ERR_TOO_LARGE;
+        }
         else if (c == L'\r') { /* CRLF 의 CR 은 버린다 */ }
         else { field.push_back(c); }
 
         if (field.size() > 1u << 20) return LC_ERR_TOO_LARGE;
     }
     if (!field.empty() || !row.empty() || quoted_field) {
-        if (!end_row()) return LC_ERR_TOO_LARGE;
+        if (!end_row()) return cancelled ? LC_ERR_CANCELLED : LC_ERR_TOO_LARGE;
     }
     if (out.empty()) return LC_ERR_NO_DATA;
     return LC_OK;

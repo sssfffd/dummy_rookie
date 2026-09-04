@@ -439,6 +439,8 @@ Limits limits_from(const LcOpenOptions* opt) {
     if (opt->max_state_values) lim.max_state_values = opt->max_state_values;
     if (opt->max_cells) lim.max_cells = opt->max_cells;
     if (opt->max_uncompressed_bytes) lim.max_uncompressed_bytes = opt->max_uncompressed_bytes;
+    lim.progress.fn = opt->progress;
+    lim.progress.user = opt->progress_user;
     return lim;
 }
 
@@ -542,6 +544,7 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
 
     size_t skipped = 0, unnamed = 0;
     for (size_t r = 1; r < grid.size(); ++r) {
+        if (!lim.progress.report(r, grid.size() - 1)) return LC_ERR_CANCELLED;
         const Row& row = grid[r];
         bool any_value = false;
         const LcChannelType type = classify(row, n, any_value);

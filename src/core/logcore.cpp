@@ -135,6 +135,8 @@ void LC_CALL lc_default_options(LcOpenOptions* opt) {
     opt->max_uncompressed_bytes = d.max_uncompressed_bytes;
     opt->max_state_values = d.max_state_values;
     opt->reserved = 0;
+    opt->progress = nullptr;
+    opt->progress_user = nullptr;
 }
 
 LcStatus LC_CALL lc_open_file(const wchar_t* path, const LcOpenOptions* opt, LcDataset** out) {
@@ -223,6 +225,7 @@ const wchar_t* LC_CALL lc_status_text(LcStatus st) {
         case LC_ERR_MEMORY:      return L"메모리가 부족합니다.";
         case LC_ERR_UNSUPPORTED: return L"지원하지 않는 형식입니다. .xlsx 또는 CSV 로 저장해 주세요.";
         case LC_ERR_INTERNAL:    return L"내부 오류입니다.";
+        case LC_ERR_CANCELLED:   return L"읽기를 취소했습니다.";
     }
     return L"알 수 없는 오류입니다.";
 }

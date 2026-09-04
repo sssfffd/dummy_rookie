@@ -1,7 +1,7 @@
 # 12 · 선택 방식 개편, 그룹화, 레일 겹침 수정, 비교 정렬·구분·존재 차이
 
 - **날짜** 2026-09-04
-- **커밋** 이 커밋
+- **커밋** [`6aa615e`](../../../commit/6aa615e) Rework channel selection, group the list, and sharpen log comparison
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `README.md`
 
 ## 요청

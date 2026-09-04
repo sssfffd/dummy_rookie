@@ -190,6 +190,9 @@ LcStatus parse_shared_strings(IStream* s, const Limits& lim,
         if (nt != XmlNodeType_Element) continue;
         if (local_name(r.get()) != L"si") continue;
         if (out.size() >= lim.max_cells) return LC_ERR_TOO_LARGE;
+        if ((out.size() & 0xFFFu) == 0 && !lim.progress.report(out.size(), 0)) {
+            return LC_ERR_CANCELLED;
+        }
         out.push_back(read_element_text(r.get(), 1u << 16));
     }
     return LC_OK;
@@ -288,6 +291,9 @@ LcStatus parse_sheet(IStream* s, const Limits& lim, const SheetContext& cx, Grid
                 row_index = static_cast<uint32_t>(out.size());
             }
             if (row_index >= lim.max_channels + 1u) return LC_ERR_TOO_LARGE;
+            if ((row_index & 0xFFu) == 0 && !lim.progress.report(row_index, 0)) {
+                return LC_ERR_CANCELLED;
+            }
             if (out.size() <= row_index) out.resize(row_index + 1u);
             next_col = 0;
             continue;

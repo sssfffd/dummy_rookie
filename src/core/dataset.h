@@ -10,6 +10,17 @@
 
 namespace lc {
 
+// 파싱 중간에 진행 상황을 알리고, 취소 요청을 받는다.
+struct Progress {
+    LcProgressFn fn = nullptr;
+    void* user = nullptr;
+
+    // 계속해도 되면 true, 취소하라면 false.
+    bool report(uint64_t done, uint64_t total) const {
+        return fn == nullptr || fn(user, done, total) != 0;
+    }
+};
+
 // 신뢰할 수 없는 파일에 대한 자원 상한. 넘으면 파싱을 멈춘다.
 struct Limits {
     uint32_t max_channels = 4096;
@@ -17,6 +28,7 @@ struct Limits {
     uint32_t max_state_values = 4096;
     uint64_t max_cells = 32000000ull;
     uint64_t max_uncompressed_bytes = 512ull * 1024 * 1024;
+    Progress progress;   // 기본은 알림 없음
 };
 
 Limits limits_from(const LcOpenOptions* opt);

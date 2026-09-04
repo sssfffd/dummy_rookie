@@ -46,7 +46,8 @@ typedef enum LcStatus {
     LC_ERR_TOO_LARGE   = 5,  /* 자원 상한 초과 (아래 LcOpenOptions 참고) */
     LC_ERR_MEMORY      = 6,
     LC_ERR_UNSUPPORTED = 7,  /* 확장자를 지원하지 않음 */
-    LC_ERR_INTERNAL    = 8
+    LC_ERR_INTERNAL    = 8,
+    LC_ERR_CANCELLED   = 9   /* 진행 콜백이 취소를 요청함 */
 } LcStatus;
 
 /* ---- 채널 / 시간축 종류 --------------------------------------------------- */
@@ -84,6 +85,18 @@ typedef enum LcOrientation {
     LC_ORIENT_COLS = 2   /* 각 열이 IO 채널, 첫 열이 시간 */
 } LcOrientation;
 
+/* ---- 진행 상황 알림 --------------------------------------------------------
+ * 큰 파일은 읽는 데 몇 초가 걸립니다. 그동안 아무 소식이 없으면 멈춘 것과
+ * 구분되지 않으므로, 읽는 중간에 이 콜백을 불러 줍니다.
+ *
+ *   done  지금까지 읽은 줄/채널 수
+ *   total 전체 개수. 미리 알 수 없으면 0.
+ *
+ * 파싱 스레드에서 불립니다. 0 을 돌려주면 읽기를 멈추고 LC_ERR_CANCELLED 로
+ * 돌아옵니다. 0 이 아니면 계속합니다.
+ */
+typedef int (LC_CALL* LcProgressFn)(void* user, uint64_t done, uint64_t total);
+
 /* ---- 열기 옵션 ------------------------------------------------------------
  * 상한값은 신뢰할 수 없는 파일에 대한 방어선입니다. 0 을 넣으면 기본값을 씁니다.
  * 상한을 넘으면 파싱을 중단하고 LC_ERR_TOO_LARGE 를 돌려줍니다.
@@ -97,6 +110,8 @@ typedef struct LcOpenOptions {
     uint64_t max_uncompressed_bytes;   /* xlsx 압축 해제 총량 상한. 기본 512 MiB */
     uint32_t max_state_values;         /* 채널당 서로 다른 상태 문자열 수. 기본 4096 */
     uint32_t reserved;
+    LcProgressFn progress;             /* 없으면 NULL */
+    void* progress_user;
 } LcOpenOptions;
 
 /* opt 를 기본값으로 채운다. */
