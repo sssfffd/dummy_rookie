@@ -484,6 +484,13 @@ void App::BeginLoad(const std::wstring& path, int slot) {
         opt.orientation = job->orientation;
         opt.progress = &LoadProgress;
         opt.progress_user = job.get();
+        // 이 프로그램은 사용자가 자기 로그를 여는 도구다. 크기 때문에 거절하지
+        // 않는다. 대신 정말 메모리가 모자라면 LC_ERR_MEMORY 로 분명히 알린다.
+        opt.max_channels = LC_UNLIMITED32;
+        opt.max_samples = LC_UNLIMITED32;
+        opt.max_state_values = LC_UNLIMITED32;
+        opt.max_cells = LC_UNLIMITED64;
+        opt.max_uncompressed_bytes = LC_UNLIMITED64;
 
         LcDataset* ds = nullptr;
         job->status = lc_open_file(job->path.c_str(), &opt, &ds);
@@ -1443,7 +1450,10 @@ void App::RebuildTopButtons(float clientWidth) {
         addLabel(L"비교");
         addCtl(ButtonId::CompareBoth, L"이전+이후", compareMode_ == CompareMode::Both, S(2.0f));
         addCtl(ButtonId::CompareDiff, L"차이 Δ", compareMode_ == CompareMode::Diff, S(2.0f));
-        addCtl(ButtonId::Stagger, L"벌려 그리기", stagger_, S(14.0f));
+        addCtl(ButtonId::Stagger, L"벌려 그리기", stagger_, S(2.0f));
+        addCtl(ButtonId::CompareColorCycle,
+               compareColor_ == CompareColor::BeforeAfter ? L"색: 이전·이후" : L"색: 채널별",
+               false, S(14.0f));
 
         // 화살표만 있으면 무엇을 미는 건지 알 수 없다. 무엇이 어느 쪽으로
         // 움직이는지 글자로 적는다.
@@ -1836,14 +1846,14 @@ void App::DrawLanesView(const Rects& r) {
             const double lo = cmpLo_[ch], hi = cmpHi_[ch];
             // 벌어진 만큼을 먼저 면적으로 칠하고 그 위에 두 선을 실선으로 얹는다.
             DrawDifferenceBand(ch, r.plot, lane.top + pad, lane.bottom - pad, lo, hi,
-                               pal_.cursorB);
+                               pal_.band);
             DrawSeries(ch, r.plot, lane.top + pad, lane.bottom - pad, lo, hi,
-                       pal_.accent);
+                       pal_.before);
             // 값이 완전히 같으면 두 선이 포개져 하나로 보인다. 그때만 확인하고
             // 싶다면 "벌려 그리기" 로 이후 선을 살짝 띄울 수 있다.
             const float shift = stagger_ ? (lane.bottom - lane.top) * 0.10f : 0.0f;
             DrawResampled(ch, r.plot, lane.top + pad + shift, lane.bottom - pad + shift,
-                          lo, hi, pal_.cursorB, false, S(1.8f));
+                          lo, hi, pal_.after, false, S(1.6f));
         } else {
             switch (type) {
                 case LC_CH_DIGITAL: DrawLaneDigital(ch, lane, r.plot); break;
@@ -1876,11 +1886,11 @@ void App::DrawLanesView(const Rects& r) {
                 DrawLabel(FormatValue(ch, vals[vi]), fSmallRight_.get(),
                           Rect(rightX + S(4.0f), lane.top + S(2.0f), r.plot.right - S(10.0f),
                                lane.top + h * 0.36f),
-                          pal_.accent);
+                          pal_.before);
                 DrawLabel(FormatValue(ch, CompareValueAt(ch, tv)), fSmallRight_.get(),
                           Rect(rightX + S(4.0f), lane.top + h * 0.34f, r.plot.right - S(10.0f),
                                lane.top + h * 0.68f),
-                          pal_.cursorB);
+                          pal_.after);
                 const double d = DiffValueAt(ch, tv);
                 DrawLabel(std::isfinite(d) ? (L"Δ " + FormatNumber(d)) : L"Δ —",
                           fSmallRight_.get(),
@@ -2332,9 +2342,10 @@ void App::DrawOverlayView(const Rects& r) {
     if (selected > kMaxOverlay) {
         note = Fmt(L"선택한 %u개 중 앞 %u개만 표시", selected, kMaxOverlay);
     } else if (HasCompare()) {
-        note = (compareMode_ == CompareMode::Diff)
-                   ? L"이후 − 이전"
-                   : L"굵은 선 = 이전 · 가는 선 = 이후 · 음영 = 차이";
+        note = (compareMode_ == CompareMode::Diff) ? L"이후 − 이전"
+               : (compareColor_ == CompareColor::ByChannel)
+                   ? L"색 = 채널 · 굵은 선 = 이전 · 가는 선 = 이후"
+                   : L"파랑 = 이전 · 주황 = 이후 · 보라 음영 = 차이";
     }
     float noteL = rightX;
     if (!note.empty()) {
@@ -2469,6 +2480,11 @@ void App::OnButton(ButtonId id) {
         case ButtonId::CompareBoth: compareMode_ = CompareMode::Both; break;
         case ButtonId::CompareDiff: compareMode_ = CompareMode::Diff; break;
         case ButtonId::Stagger: stagger_ = !stagger_; break;
+        case ButtonId::CompareColorCycle:
+            compareColor_ = (compareColor_ == CompareColor::BeforeAfter)
+                                ? CompareColor::ByChannel
+                                : CompareColor::BeforeAfter;
+            break;
         case ButtonId::MetricSamples:  metric_ = DiffMetric::Samples; break;
         case ButtonId::MetricTimeFrac: metric_ = DiffMetric::TimeFrac; break;
         case ButtonId::MetricPeak:     metric_ = DiffMetric::Peak; break;

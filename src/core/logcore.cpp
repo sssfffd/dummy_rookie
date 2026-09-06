@@ -76,7 +76,10 @@ LcStatus read_whole_file(const wchar_t* path, uint64_t cap, std::vector<uint8_t>
 
     LARGE_INTEGER size{};
     if (!GetFileSizeEx(h, &size) || size.QuadPart < 0) { CloseHandle(h); return LC_ERR_OPEN; }
-    if (static_cast<uint64_t>(size.QuadPart) > cap) { CloseHandle(h); return LC_ERR_TOO_LARGE; }
+    if (cap != LC_UNLIMITED64 && static_cast<uint64_t>(size.QuadPart) > cap) {
+        CloseHandle(h);
+        return LC_ERR_TOO_LARGE;
+    }
 
     try {
         out.resize(static_cast<size_t>(size.QuadPart));
@@ -155,6 +158,10 @@ LcStatus LC_CALL lc_open_file(const wchar_t* path, const LcOpenOptions* opt, LcD
             if (st != LC_OK) return st;
             Grid grid;
             const LcStatus rs = lc::read_delimited(bytes.data(), bytes.size(), lim, grid);
+            // 격자를 만들었으면 원본 바이트는 더 이상 필요 없다. 큰 파일에서
+            // 이걸 들고 있으면 파일 크기만큼을 괜히 더 쓴다.
+            bytes.clear();
+            bytes.shrink_to_fit();
             if (rs != LC_OK) return rs;
             return finish(grid, orientation, lim, out);
         }
@@ -186,7 +193,7 @@ LcStatus LC_CALL lc_open_memory(const void* bytes, size_t size, const wchar_t* h
     const Limits lim = lc::limits_from(opt);
     const uint32_t orientation = opt ? opt->orientation : 0u;
     if (orientation > LC_ORIENT_COLS) return LC_ERR_ARG;
-    if (static_cast<uint64_t>(size) > lim.max_uncompressed_bytes) return LC_ERR_TOO_LARGE;
+    if (lim.over_bytes(size)) return LC_ERR_TOO_LARGE;
 
     const Format fmt = hint_name ? format_from_path(hint_name) : Format::Delimited;
     if (fmt == Format::Xlsx) {
@@ -222,7 +229,9 @@ const wchar_t* LC_CALL lc_status_text(LcStatus st) {
         case LC_ERR_FORMAT:      return L"파일 형식을 해석하지 못했습니다.";
         case LC_ERR_NO_DATA:     return L"시간 행이나 IO 채널을 찾지 못했습니다. 배치 설정을 바꿔 보세요.";
         case LC_ERR_TOO_LARGE:   return L"파일이 허용 한도를 넘습니다.";
-        case LC_ERR_MEMORY:      return L"메모리가 부족합니다.";
+        case LC_ERR_MEMORY:
+            return L"메모리가 부족합니다. 파일이 너무 크면 필요한 구간만 잘라 저장하거나 "
+                   L"CSV 로 저장해 열어 보세요.";
         case LC_ERR_UNSUPPORTED: return L"지원하지 않는 형식입니다. .xlsx 또는 CSV 로 저장해 주세요.";
         case LC_ERR_INTERNAL:    return L"내부 오류입니다.";
         case LC_ERR_CANCELLED:   return L"읽기를 취소했습니다.";

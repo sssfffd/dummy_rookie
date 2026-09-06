@@ -21,6 +21,11 @@ struct Palette {
     D2D1_COLOR_F onAccent;    // 강조색 위 글자
     D2D1_COLOR_F cursorA;
     D2D1_COLOR_F cursorB;
+    // 두 로그 비교용. 파랑 <-> 진한 청록 대신 파랑 <-> 자홍으로 잡았다.
+    // 색맹 여부와 무관하게 밝기까지 벌어져야 겹쳐도 구분된다.
+    D2D1_COLOR_F before;      // 이전 로그
+    D2D1_COLOR_F after;       // 이후 로그
+    D2D1_COLOR_F band;        // 두 선 사이 음영 (두 선 어느 쪽과도 다른 색)
     D2D1_COLOR_F series[8];   // 상태 리본용 범주 색
 };
 
@@ -46,6 +51,9 @@ inline Palette LightPalette() {
     p.onAccent = Rgb(0xFFFFFF);
     p.cursorA  = Rgb(0x2A78D6);
     p.cursorB  = Rgb(0xEB6834);
+    p.before   = Rgb(0x1C5CAB);   // 진한 파랑
+    p.after    = Rgb(0xEB6834);   // 주황
+    p.band     = Rgb(0x4A3AA7);   // 보라 — 두 선 어느 쪽도 아니다
     const UINT32 s[8] = {0x2A78D6, 0xEB6834, 0x1BAF7A, 0xEDA100,
                          0xE87BA4, 0x008300, 0x4A3AA7, 0xE34948};
     for (int i = 0; i < 8; ++i) p.series[i] = Rgb(s[i]);
@@ -70,6 +78,9 @@ inline Palette DarkPalette() {
     p.onAccent = Rgb(0xFFFFFF);
     p.cursorA  = Rgb(0x3987E5);
     p.cursorB  = Rgb(0xD95926);
+    p.before   = Rgb(0x6DA7EC);   // 밝은 파랑
+    p.after    = Rgb(0xEB6834);   // 주황
+    p.band     = Rgb(0x9085E9);   // 보라
     const UINT32 s[8] = {0x3987E5, 0xD95926, 0x199E70, 0xC98500,
                          0xD55181, 0x008300, 0x9085E9, 0xE66767};
     for (int i = 0; i < 8; ++i) p.series[i] = Rgb(s[i]);

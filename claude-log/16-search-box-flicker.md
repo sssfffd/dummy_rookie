@@ -1,7 +1,7 @@
 # 16 · 마우스를 움직이면 검색창이 깜빡이던 문제
 
 - **날짜** 2026-09-04
-- **커밋** 이 커밋
+- **커밋** [`5cd0cd5`](../../../commit/5cd0cd5) Draw the search box instead of hosting an EDIT control
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `src/app/CMakeLists.txt`, `README.md`
 
 ## 요청

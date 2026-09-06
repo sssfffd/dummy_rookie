@@ -29,6 +29,24 @@ struct Limits {
     uint64_t max_cells = 32000000ull;
     uint64_t max_uncompressed_bytes = 512ull * 1024 * 1024;
     Progress progress;   // 기본은 알림 없음
+
+    // LC_UNLIMITED 가 들어오면 그 항목은 검사하지 않는다. 비교 연산 한곳에
+    // 모아 두면 호출부마다 조건을 흩뿌리지 않아도 된다.
+    bool over_channels(uint64_t n) const {
+        return max_channels != LC_UNLIMITED32 && n > max_channels;
+    }
+    bool over_samples(uint64_t n) const {
+        return max_samples != LC_UNLIMITED32 && n > max_samples;
+    }
+    bool over_states(uint64_t n) const {
+        return max_state_values != LC_UNLIMITED32 && n > max_state_values;
+    }
+    bool over_cells(uint64_t n) const {
+        return max_cells != LC_UNLIMITED64 && n > max_cells;
+    }
+    bool over_bytes(uint64_t n) const {
+        return max_uncompressed_bytes != LC_UNLIMITED64 && n > max_uncompressed_bytes;
+    }
 };
 
 Limits limits_from(const LcOpenOptions* opt);

@@ -98,9 +98,15 @@ typedef enum LcOrientation {
 typedef int (LC_CALL* LcProgressFn)(void* user, uint64_t done, uint64_t total);
 
 /* ---- 열기 옵션 ------------------------------------------------------------
- * 상한값은 신뢰할 수 없는 파일에 대한 방어선입니다. 0 을 넣으면 기본값을 씁니다.
- * 상한을 넘으면 파싱을 중단하고 LC_ERR_TOO_LARGE 를 돌려줍니다.
+ * 상한값은 신뢰할 수 없는 파일에 대한 방어선입니다. 0 을 넣으면 기본값을 쓰고,
+ * LC_UNLIMITED 를 넣으면 그 항목을 검사하지 않습니다.
+ *
+ * 상한을 없애면 파일 크기만큼 메모리를 그대로 씁니다. 파일이 정말 크면
+ * LC_ERR_TOO_LARGE 대신 LC_ERR_MEMORY 로 실패할 수 있습니다. 남이 준 파일을
+ * 다루는 프로그램이라면 상한을 남겨 두는 편이 낫습니다.
  */
+#define LC_UNLIMITED32 0xFFFFFFFFu
+#define LC_UNLIMITED64 0xFFFFFFFFFFFFFFFFull
 typedef struct LcOpenOptions {
     uint32_t struct_size;              /* sizeof(LcOpenOptions). 필수 */
     uint32_t orientation;              /* LcOrientation. 기본 LC_ORIENT_AUTO */

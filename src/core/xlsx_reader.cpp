@@ -189,7 +189,7 @@ LcStatus parse_shared_strings(IStream* s, const Limits& lim,
     while (r->Read(&nt) == S_OK) {
         if (nt != XmlNodeType_Element) continue;
         if (local_name(r.get()) != L"si") continue;
-        if (out.size() >= lim.max_cells) return LC_ERR_TOO_LARGE;
+        if (lim.over_cells(out.size())) return LC_ERR_TOO_LARGE;
         if ((out.size() & 0xFFFu) == 0 && !lim.progress.report(out.size(), 0)) {
             return LC_ERR_CANCELLED;
         }
@@ -285,12 +285,12 @@ LcStatus parse_sheet(IStream* s, const Limits& lim, const SheetContext& cx, Grid
             if (attr(r.get(), L"r", rs)) {
                 double v = 0;
                 if (!parse_number(rs, v) || v < 1) return LC_ERR_FORMAT;
-                if (v > static_cast<double>(lim.max_channels) + 1.0) return LC_ERR_TOO_LARGE;
+                if (lim.over_channels(static_cast<uint64_t>(v))) return LC_ERR_TOO_LARGE;
                 row_index = static_cast<uint32_t>(v) - 1u;
             } else {
                 row_index = static_cast<uint32_t>(out.size());
             }
-            if (row_index >= lim.max_channels + 1u) return LC_ERR_TOO_LARGE;
+            if (lim.over_channels(row_index)) return LC_ERR_TOO_LARGE;
             if ((row_index & 0xFFu) == 0 && !lim.progress.report(row_index, 0)) {
                 return LC_ERR_CANCELLED;
             }
@@ -300,7 +300,8 @@ LcStatus parse_sheet(IStream* s, const Limits& lim, const SheetContext& cx, Grid
         }
 
         if (name != L"c") continue;
-        if (cell_budget-- == 0) return LC_ERR_TOO_LARGE;
+        if (cell_budget == 0) return LC_ERR_TOO_LARGE;
+        if (cell_budget != LC_UNLIMITED64) --cell_budget;
 
         std::wstring ref, type, style;
         const bool have_ref = attr(r.get(), L"r", ref);
@@ -310,7 +311,7 @@ LcStatus parse_sheet(IStream* s, const Limits& lim, const SheetContext& cx, Grid
         uint32_t col = next_col;
         if (have_ref && !column_from_ref(ref, col)) col = next_col;
         next_col = col + 1u;
-        if (col >= lim.max_samples + 1u) return LC_ERR_TOO_LARGE;
+        if (lim.over_samples(col)) return LC_ERR_TOO_LARGE;
 
         const bool empty_element = r->IsEmptyElement() != 0;
 

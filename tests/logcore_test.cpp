@@ -503,6 +503,41 @@ void TestCompareTwoLogs() {
     CHECK(at_b(static_cast<uint32_t>(bi_di), 1.0) == 1.0);
 }
 
+
+void TestUnlimited() {
+    std::printf("상한 해제\n");
+    lc::Grid g;
+    g.push_back({Txt(L"Time"), Num(0), Num(1)});
+    for (int i = 0; i < 5; ++i) g.push_back({Txt(L"CH"), Num(0), Num(1)});
+
+    {   // 상한이 걸려 있으면 거절한다
+        lc::Grid g1 = g;
+        lc::Dataset ds;
+        lc::Limits lim;
+        lim.max_channels = 3;
+        CHECK(lc::build_dataset(g1, LC_ORIENT_ROWS, lim, ds) == LC_ERR_TOO_LARGE);
+    }
+    {   // LC_UNLIMITED 면 검사하지 않는다
+        lc::Grid g2 = g;
+        lc::Dataset ds;
+        lc::Limits lim;
+        lim.max_channels = LC_UNLIMITED32;
+        lim.max_samples = LC_UNLIMITED32;
+        lim.max_cells = LC_UNLIMITED64;
+        CHECK(lc::build_dataset(g2, LC_ORIENT_ROWS, lim, ds) == LC_OK);
+        CHECK(ds.channels.size() == 5);
+    }
+    // 헬퍼 자체도 확인해 둔다
+    lc::Limits lim;
+    lim.max_channels = LC_UNLIMITED32;
+    lim.max_cells = LC_UNLIMITED64;
+    CHECK(!lim.over_channels(4000000000ull));
+    CHECK(!lim.over_cells(9000000000000ull));
+    lim.max_channels = 10;
+    CHECK(lim.over_channels(11));
+    CHECK(!lim.over_channels(10));
+}
+
 }  // namespace
 
 int main() {
@@ -524,6 +559,7 @@ int main() {
     TestFindChannel();
     TestSampleAt();
     TestCompareTwoLogs();
+    TestUnlimited();
 
     std::printf("\n%d개 검사 중 %d개 실패\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -102,8 +102,8 @@ LcStatus read_delimited(const uint8_t* data, size_t size, const Limits& lim, Gri
     auto end_row = [&]() -> bool {
         end_field();
         cells += row.size();
-        if (cells > lim.max_cells) return false;
-        if (out.size() >= lim.max_channels + 1u) return false;
+        if (lim.over_cells(cells)) return false;
+        if (lim.over_channels(out.size())) return false;
         // 4096줄마다 한 번. 매 줄 부르면 알림 자체가 파싱보다 비싸진다.
         if ((out.size() & 0xFFFu) == 0 && !lim.progress.report(out.size(), 0)) {
             cancelled = true;

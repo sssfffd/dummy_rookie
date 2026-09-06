@@ -529,8 +529,8 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
     if (width < 2) return LC_ERR_NO_DATA;
 
     const size_t n = width - 1;
-    if (n > lim.max_samples) return LC_ERR_TOO_LARGE;
-    if (grid.size() - 1 > lim.max_channels) return LC_ERR_TOO_LARGE;
+    if (lim.over_samples(n)) return LC_ERR_TOO_LARGE;
+    if (lim.over_channels(grid.size() - 1)) return LC_ERR_TOO_LARGE;
 
     out.times.clear();
     out.time_kind = parse_time_axis(grid[0], n, out.times, out);
@@ -591,7 +591,7 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
                 if (key.empty()) continue;
                 auto it = state_ids.find(key);
                 if (it == state_ids.end()) {
-                    if (ch.states.size() >= lim.max_state_values) return LC_ERR_TOO_LARGE;
+                    if (lim.over_states(ch.states.size() + 1)) return LC_ERR_TOO_LARGE;
                     const uint32_t id = static_cast<uint32_t>(ch.states.size());
                     ch.states.push_back(key);
                     it = state_ids.emplace(std::move(key), id).first;
@@ -624,6 +624,11 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
             if (v < mn) mn = v;
             if (v > mx) mx = v;
         }
+
+        // 이 행은 채널로 옮겼으니 격자에서 비운다. 그러지 않으면 파일 하나를
+        // 격자와 채널 두 벌로 들고 있게 되어 큰 파일에서 메모리가 두 배로 든다.
+        grid[r].clear();
+        grid[r].shrink_to_fit();
 
         if (!std::isfinite(mn)) { ++skipped; continue; }
         ch.min = mn;

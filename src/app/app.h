@@ -45,7 +45,7 @@ enum class ButtonId {
     FilterChanged,
     GroupsExpand, GroupsCollapse,
     AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger,
-    YFitVisible, CancelLoad,
+    YFitVisible, CancelLoad, CompareColorCycle,
     MetricSamples, MetricTimeFrac, MetricPeak, MetricMean, MetricRms, MetricArea, MetricRuns,
     ToleranceCycle
 };
@@ -71,6 +71,11 @@ enum class PlotMode { Lanes, Overlay };
 //   Both — 이전과 이후를 겹쳐 그린다. 무엇이 어떻게 달라졌는지 눈으로 본다.
 //   Diff — 이후에서 이전을 뺀 값만 그린다. 달라진 구간만 도드라진다.
 enum class CompareMode { Both, Diff };
+
+// 비교할 때 색이 무엇을 뜻하는가.
+//   BeforeAfter — 이전은 파랑, 이후는 주황으로 고정. 두 선을 구분하는 게 목적일 때
+//   ByChannel   — 색은 채널을 뜻하고, 이전/이후는 굵기로 나눈다. 채널이 여럿일 때
+enum class CompareColor { BeforeAfter, ByChannel };
 
 // 두 로그의 차이를 무엇으로 재는가.
 //
@@ -306,6 +311,7 @@ private:
     std::vector<double> cmpLo_, cmpHi_;    // 이전·이후를 함께 담는 값 범위
     std::vector<double> diffLo_, diffHi_;  // 차이 값의 범위
     CompareMode compareMode_ = CompareMode::Both;
+    CompareColor compareColor_ = CompareColor::BeforeAfter;
     std::vector<uint32_t> extraB_;     // 이후 로그에만 있는 채널
     double compareOffset_ = 0.0;       // 이후 로그 시간에 더할 보정값
     bool stagger_ = false;             // 겹칠 때 이후 선을 살짝 띄워 그린다
