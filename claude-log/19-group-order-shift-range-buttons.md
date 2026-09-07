@@ -1,7 +1,7 @@
 # 19 · 그룹 순서 바꾸기, Shift 범위 선택이 화면 순서를 따르도록, 버튼 튀어나옴 수정
 
 - **날짜** 2026-09-07
-- **커밋** 이 커밋
+- **커밋** [`06867e9`](../../../commit/06867e9) Reorder groups, range-select in display order, stop buttons overflowing
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `README.md`
 
 ## 요청

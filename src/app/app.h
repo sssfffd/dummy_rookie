@@ -42,7 +42,7 @@ enum class ButtonId {
     CompareBoth, CompareDiff,
     ZoomIn, ZoomOut, Fit, ClearCursors,
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState,
-    FilterChanged,
+    FilterChanged, FilterMissing,
     GroupsExpand, GroupsCollapse, NewGroup, AddToNewGroup,
     AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger,
     YFitVisible, CancelLoad, CompareColorCycle,
@@ -123,10 +123,10 @@ struct Group {
     bool open = true;
 };
 
-// 왼쪽 목록의 한 줄. 그룹 머리, 채널, 그리고 "이후 로그에만 있는" 채널까지
+// 왼쪽 목록의 한 줄. 그룹 머리, 채널, 그리고 "한쪽 로그에만 있는" 채널까지
 // 한 배열로 다뤄야 스크롤과 클릭 판정이 한곳에 모인다.
 struct RailRow {
-    enum class Kind : uint8_t { Group, Channel, ExtraHeader, ExtraChannel };
+    enum class Kind : uint8_t { Group, Channel, MissingHeader, ExtraHeader, ExtraChannel };
     Kind kind = Kind::Channel;
     // Group: 그룹 번호 (groups_.size() 이면 "미분류"), Channel: 이전 로그 채널,
     // ExtraChannel: 이후 로그 채널
@@ -247,6 +247,10 @@ private:
     // 이후 - 이전. 상태 채널은 값이 다르면 1, 같으면 0.
     double DiffValueAt(uint32_t ch, double t) const;
     bool ChannelDiffers(uint32_t ch) const;
+    // 이전 로그에만 있는 채널 (이후 로그에서 이름이 사라진 것)
+    std::vector<uint32_t> MissingChannels() const;
+    // 검색창에 걸리는가. 이후 로그에만 있는 채널에도 같은 잣대를 쓴다.
+    bool MatchesQuery(const std::wstring& name) const;
     // 지금 고른 척도로 잰 값과, 목록에 넣을 짧은 표시
     double MetricValue(uint32_t ch) const;
     std::wstring MetricBadge(uint32_t ch) const;
@@ -287,6 +291,9 @@ private:
     void NudgeAlign(int steps);
     void ResetAlign();
 
+    // 지금 고른 채널을 **왼쪽 목록에 놓인 차례대로**. 그룹 순서를 바꾸면
+    // 그래프에서 그리는 차례도 따라와야 둘을 눈으로 맞출 수 있다.
+    std::vector<uint32_t> SelectedInDisplayOrder() const;
     // 겹쳐보기에 실제로 그릴 채널 목록 (선택된 것 중 앞에서부터 kMaxOverlay 개)
     std::vector<uint32_t> OverlayChannels() const;
     // 현재 보이는 시간 구간에서의 값 범위. 확대하면 세로 눈금도 따라 좁혀진다.
@@ -397,7 +404,9 @@ private:
     float railDownY_ = 0.0f;
 
     std::wstring query_;
-    int filter_ = -1;  // -1 = 전체, -2 = 달라진 채널만, 아니면 LcChannelType
+    // -1 = 전체, -2 = 달라진 채널만, -3 = 한쪽에만 있는 채널만,
+    // 0 이상이면 LcChannelType
+    int filter_ = -1;
     std::vector<Button> buttons_;
     ButtonId hotButton_ = ButtonId::None;
 };

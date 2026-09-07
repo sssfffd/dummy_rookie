@@ -526,6 +526,14 @@ bool App::ChannelDiffers(uint32_t ch) const {
     return ch < diffCount_.size() && diffCount_[ch] > 0;
 }
 
+bool App::MatchesQuery(const std::wstring& raw) const {
+    if (query_.empty()) return true;
+    std::wstring name = raw;
+    std::wstring q = query_;
+    std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+    std::transform(q.begin(), q.end(), q.begin(), ::towlower);
+    return name.find(q) != std::wstring::npos;
+}
 bool App::ChannelVisibleInList(uint32_t ch) const {
     if (!ds_) return false;
     // "달라진 것만" 은 값이 바뀐 채널과 이후 로그에서 사라진 채널을 모두 뜻한다.
@@ -533,13 +541,40 @@ bool App::ChannelVisibleInList(uint32_t ch) const {
         const bool missing = ch >= matchB_.size() || matchB_[ch] < 0;
         if (!missing && !ChannelDiffers(ch)) return false;
     }
+    // "존재 차이" 는 이후 로그에서 이름이 사라진 채널만.
+    if (filter_ == -3 && (ch < matchB_.size() && matchB_[ch] >= 0)) return false;
     if (filter_ >= 0 && static_cast<int>(lc_channel_type(ds_, ch)) != filter_) return false;
-    if (query_.empty()) return true;
-    std::wstring name = lc_channel_name(ds_, ch);
-    std::wstring q = query_;
-    std::transform(name.begin(), name.end(), name.begin(), ::towlower);
-    std::transform(q.begin(), q.end(), q.begin(), ::towlower);
-    return name.find(q) != std::wstring::npos;
+    return MatchesQuery(lc_channel_name(ds_, ch));
+}
+// 이전 로그에만 있는 채널. 검색창에 걸리는 것만 남긴다.
+std::vector<uint32_t> App::MissingChannels() const {
+    std::vector<uint32_t> out;
+    if (!ds_ || !HasCompare()) return out;
+    const uint32_t n = lc_channel_count(ds_);
+    for (uint32_t ch = 0; ch < n; ++ch) {
+        if (ch < matchB_.size() && matchB_[ch] >= 0) continue;
+        if (MatchesQuery(lc_channel_name(ds_, ch))) out.push_back(ch);
+    }
+    return out;
+}
+// 왼쪽 목록에 놓인 차례대로, 지금 고른 채널만.
+std::vector<uint32_t> App::SelectedInDisplayOrder() const {
+    std::vector<uint32_t> out;
+    if (!ds_) return out;
+    std::vector<bool> seen(selected_.size(), false);
+    for (uint32_t g = 0; g <= groups_.size(); ++g) {
+        for (uint32_t ch : GroupChannels(g)) {
+            if (ch < selected_.size() && selected_[ch] && !seen[ch]) {
+                seen[ch] = true;
+                out.push_back(ch);
+            }
+        }
+    }
+    // 그룹이 아직 안 풀렸으면 번호 순서로라도 빠짐없이 담는다.
+    for (uint32_t ch = 0; ch < selected_.size(); ++ch) {
+        if (selected_[ch] && (ch >= seen.size() || !seen[ch])) out.push_back(ch);
+    }
+    return out;
 }
 
 void App::CloseCompare() {
@@ -553,7 +588,7 @@ void App::CloseCompare() {
     cmpLo_.clear(); cmpHi_.clear();
     diffLo_.clear(); diffHi_.clear();
     compareSummary_.clear();
-    if (filter_ == -2) filter_ = -1;
+    if (filter_ <= -2) filter_ = -1;   // 비교 전용 필터는 비교를 닫으면 뜻이 없다
 }
 
 void App::CloseDataset() {
@@ -1173,6 +1208,21 @@ void App::RebuildRailRows() {
     if (!ds_) return;
     if (groupChannels_.size() != groups_.size() + 1) ResolveGroups();
 
+    // "존재 차이" 는 그룹을 무시하고, 한쪽에만 있는 IO 를 두 묶음으로 모아 보여
+    // 준다. 흩어져 있으면 무엇이 없어지고 무엇이 새로 생겼는지 한눈에 안 들어온다.
+    if (filter_ == -3 && HasCompare()) {
+        railRows_.push_back({RailRow::Kind::MissingHeader, 0, 0});
+        for (uint32_t ch : MissingChannels()) {
+            railRows_.push_back({RailRow::Kind::Channel, ch, static_cast<uint32_t>(groups_.size())});
+        }
+        railRows_.push_back({RailRow::Kind::ExtraHeader, 0, 0});
+        for (uint32_t b : extraB_) {
+            if (MatchesQuery(lc_channel_name(dsB_, b)))
+                railRows_.push_back({RailRow::Kind::ExtraChannel, b, 0});
+        }
+        return;
+    }
+
     for (uint32_t g = 0; g <= groups_.size(); ++g) {
         uint32_t visible = 0, selected = 0;
         GroupCounts(g, visible, selected);
@@ -1192,7 +1242,10 @@ void App::RebuildRailRows() {
     // "무엇이 새로 생겼는지" 는 두 로그를 견줄 때 꼭 알아야 하는 정보다.
     if (!extraB_.empty()) {
         railRows_.push_back({RailRow::Kind::ExtraHeader, 0, 0});
-        for (uint32_t b : extraB_) railRows_.push_back({RailRow::Kind::ExtraChannel, b, 0});
+        for (uint32_t b : extraB_) {
+            if (MatchesQuery(lc_channel_name(dsB_, b)))
+                railRows_.push_back({RailRow::Kind::ExtraChannel, b, 0});
+        }
     }
 }
 
@@ -1779,7 +1832,10 @@ void App::RebuildRailButtons(float railLeft, float railRight, float railTop) {
     add(ButtonId::FilterDigital, L"DIG", filter_ == LC_CH_DIGITAL);
     add(ButtonId::FilterAnalog, L"ANA", filter_ == LC_CH_ANALOG);
     add(ButtonId::FilterState, L"STATE", filter_ == LC_CH_STATE);
-    if (HasCompare()) add(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
+    if (HasCompare()) {
+        add(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
+        add(ButtonId::FilterMissing, L"존재 차이", filter_ == -3);
+    }
 
     // 다음 묶음은 새 줄에서 시작한다
     x = left;
@@ -1788,6 +1844,7 @@ void App::RebuildRailButtons(float railLeft, float railRight, float railTop) {
     add(ButtonId::SelectNone, L"전체 해제", false);
     add(ButtonId::GroupsExpand, L"펴기", false);
     add(ButtonId::GroupsCollapse, L"접기", false);
+    add(ButtonId::NewGroup, L"새 그룹", false);
     add(ButtonId::AddToNewGroup, L"고른 IO로 새 그룹", false);
 
     railHeaderH_ = (y + rowH + S(8.0f)) - railTop;
@@ -2006,12 +2063,46 @@ void App::DrawRail(const Rects& r) {
             continue;
         }
 
-        if (row.kind == RailRow::Kind::ExtraHeader) {
+        // "이전 로그에만 있음" 머리. 이 채널들은 그릴 수 있으므로 한꺼번에 켜고
+        // 끌 수 있게 상자를 둔다.
+        if (row.kind == RailRow::Kind::MissingHeader) {
+            const std::vector<uint32_t> miss = MissingChannels();
+            uint32_t sel = 0;
+            for (uint32_t ch : miss) {
+                if (ch < selected_.size() && selected_[ch]) ++sel;
+            }
             Fill(Rect(r.rail.left, top, r.rail.right, top + rowH), pal_.hover);
-            DrawLabel(Fmt(L"이후 로그에만 있음  (%u)", static_cast<uint32_t>(extraB_.size())),
+            const D2D1_RECT_F cb = Rect(r.rail.left + S(12.0f), top + (rowH - box) * 0.5f,
+                                        r.rail.left + S(12.0f) + box, top + (rowH + box) * 0.5f);
+            const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cb, S(3.0f), S(3.0f));
+            if (!miss.empty() && sel == miss.size()) {
+                brush_->SetColor(pal_.before);
+                rt_->FillRoundedRectangle(crr, brush_.get());
+            } else {
+                brush_->SetColor(pal_.hair);
+                rt_->DrawRoundedRectangle(crr, brush_.get(), 1.0f);
+                if (sel > 0) {
+                    Fill(Rect(cb.left + S(3.0f), top + rowH * 0.5f - S(1.0f),
+                              cb.right - S(3.0f), top + rowH * 0.5f + S(1.0f)),
+                         pal_.before);
+                }
+            }
+            DrawLabel(Fmt(L"이전 로그에만 있음  (%u)", static_cast<uint32_t>(miss.size())),
                       fSmall_.get(),
+                      Rect(cb.right + S(9.0f), top, r.rail.right - S(10.0f), top + rowH),
+                      pal_.before);
+            continue;
+        }
+
+        if (row.kind == RailRow::Kind::ExtraHeader) {
+            uint32_t shown = 0;
+            for (uint32_t b : extraB_) {
+                if (MatchesQuery(lc_channel_name(dsB_, b))) ++shown;
+            }
+            Fill(Rect(r.rail.left, top, r.rail.right, top + rowH), pal_.hover);
+            DrawLabel(Fmt(L"이후 로그에만 있음  (%u)", shown), fSmall_.get(),
                       Rect(r.rail.left + S(12.0f), top, r.rail.right - S(10.0f), top + rowH),
-                      pal_.cursorB);
+                      pal_.after);
             continue;
         }
 
@@ -2024,7 +2115,7 @@ void App::DrawRail(const Rects& r) {
                       pal_.ink3);
             DrawLabel(L"신규", fSmallRight_.get(),
                       Rect(r.rail.right - S(54.0f), top, r.rail.right - S(12.0f), top + rowH),
-                      pal_.cursorB);
+                      pal_.after);
             continue;
         }
 
@@ -2125,8 +2216,9 @@ void App::DrawLanesView(const Rects& r) {
 
     float y = r.plot.top - scrollPlot_;
     int laneIndex = 0;
-    for (uint32_t ch = 0; ch < lc_channel_count(ds_); ++ch) {
-        if (!selected_[ch]) continue;
+    // 그리는 차례는 왼쪽 목록과 같아야 한다. 그룹 순서를 바꿔 놓고 그래프만 파일
+    // 순서대로 나오면 둘을 눈으로 맞출 수가 없다.
+    for (uint32_t ch : SelectedInDisplayOrder()) {
         const LcChannelType type = lc_channel_type(ds_, ch);
         const float h = LaneHeight(type);
         const D2D1_RECT_F lane = Rect(r.plot.left, y, r.plot.right, y + h);
@@ -2395,11 +2487,8 @@ void App::DrawLaneState(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot) 
 
 
 std::vector<uint32_t> App::OverlayChannels() const {
-    std::vector<uint32_t> out;
-    if (!ds_) return out;
-    for (uint32_t ch = 0; ch < lc_channel_count(ds_) && out.size() < kMaxOverlay; ++ch) {
-        if (selected_[ch]) out.push_back(ch);
-    }
+    std::vector<uint32_t> out = SelectedInDisplayOrder();
+    if (out.size() > kMaxOverlay) out.resize(kMaxOverlay);
     return out;
 }
 
@@ -2878,6 +2967,7 @@ void App::OnButton(ButtonId id) {
         case ButtonId::FilterAnalog:  filter_ = LC_CH_ANALOG; scrollRail_ = 0.0f; break;
         case ButtonId::FilterState:   filter_ = LC_CH_STATE; scrollRail_ = 0.0f; break;
         case ButtonId::FilterChanged: filter_ = -2; scrollRail_ = 0.0f; break;
+        case ButtonId::FilterMissing: filter_ = -3; scrollRail_ = 0.0f; break;
         default: break;
     }
     // 척도를 바꾸면 값은 이미 계산돼 있으므로 다시 훑을 필요가 없지만, 요약
@@ -2978,6 +3068,16 @@ void App::OnLButtonDown(float x, float y, bool shift) {
                     dropGroup_ = -1;
                     SetCapture(hwnd_);
                     return;
+                }
+            } else if (row.kind == RailRow::Kind::MissingHeader) {
+                const std::vector<uint32_t> miss = MissingChannels();
+                uint32_t sel = 0;
+                for (uint32_t c : miss) {
+                    if (c < selected_.size() && selected_[c]) ++sel;
+                }
+                const bool on = sel < miss.size();
+                for (uint32_t c : miss) {
+                    if (c < selected_.size()) selected_[c] = on;
                 }
             } else if (row.kind == RailRow::Kind::Channel) {
                 // 채널은 누른 자리를 기억만 하고, 손을 뗄 때 판정한다. 그래야 끌어서

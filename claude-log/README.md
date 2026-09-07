@@ -29,7 +29,8 @@
 | [16](16-search-box-flicker.md) | 2026-09-04 | 마우스를 움직이면 검색창이 깜빡이던 문제 | `5cd0cd5` |
 | [17](17-compare-colors-and-no-size-limit.md) | 2026-09-06 | 이전/이후 색 구분, 파일 크기 상한 제거 | `80885e5` |
 | [18](18-custom-groups.md) | 2026-09-07 | 그룹 이름·구성원 직접 정하기, 설정 저장 | `70d5f5f` |
-| [19](19-group-order-shift-range-buttons.md) | 2026-09-07 | 그룹 순서 바꾸기, Shift 범위가 화면 순서를 따르도록, 버튼 튀어나옴 | (이 커밋) |
+| [19](19-group-order-shift-range-buttons.md) | 2026-09-07 | 그룹 순서 바꾸기, Shift 범위가 화면 순서를 따르도록, 버튼 튀어나옴 | `06867e9` |
+| [20](20-existence-diff-and-audit.md) | 2026-09-07 | 빠진 기능 점검, 한쪽에만 있는 IO 모아 보기 | (이 커밋) |
 
 ## 규칙
 
