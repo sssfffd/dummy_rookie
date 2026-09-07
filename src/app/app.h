@@ -43,7 +43,7 @@ enum class ButtonId {
     ZoomIn, ZoomOut, Fit, ClearCursors,
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState,
     FilterChanged,
-    GroupsExpand, GroupsCollapse,
+    GroupsExpand, GroupsCollapse, NewGroup, AddToNewGroup,
     AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger,
     YFitVisible, CancelLoad, CompareColorCycle,
     MetricSamples, MetricTimeFrac, MetricPeak, MetricMean, MetricRms, MetricArea, MetricRuns,
@@ -108,17 +108,34 @@ struct DiffStats {
 // 서로 구분되므로 그 이상은 색으로 구별이 안 된다.
 constexpr uint32_t kMaxOverlay = 8;
 
-// 채널 목록을 이 개수씩 묶어 접었다 폈다 한다. 200채널 로그에서 목록을 훑는
-// 것보다 그룹 단위로 여닫는 쪽이 빠르다.
+// 설정이 없을 때 처음 만들어 주는 그룹 크기. 만들고 나면 사용자가 이름과 구성원을
+// 마음대로 바꿀 수 있다.
 constexpr uint32_t kGroupSize = 10;
+
+// 사용자가 만든 그룹.
+//
+// 구성원을 채널 번호가 아니라 **IO 이름**으로 들고 있는 것이 핵심이다. 번호로
+// 저장하면 다음에 연 파일의 채널 순서가 조금만 달라져도 그룹이 엉뚱한 IO 를
+// 가리킨다. 이름으로 두면 같은 양식의 로그라면 어느 파일을 열어도 그대로 붙는다.
+struct Group {
+    std::wstring name;
+    std::vector<std::wstring> members;
+    bool open = true;
+};
 
 // 왼쪽 목록의 한 줄. 그룹 머리, 채널, 그리고 "이후 로그에만 있는" 채널까지
 // 한 배열로 다뤄야 스크롤과 클릭 판정이 한곳에 모인다.
 struct RailRow {
     enum class Kind : uint8_t { Group, Channel, ExtraHeader, ExtraChannel };
     Kind kind = Kind::Channel;
-    uint32_t index = 0;   // Group: 그룹 번호, Channel: 이전 로그 채널, ExtraChannel: 이후 로그 채널
+    // Group: 그룹 번호 (groups_.size() 이면 "미분류"), Channel: 이전 로그 채널,
+    // ExtraChannel: 이후 로그 채널
+    uint32_t index = 0;
+    uint32_t group = 0;   // Channel 이 속한 그룹 (드래그로 옮길 때 쓴다)
 };
+
+// 글자를 입력받는 곳. 검색창과 그룹 이름이 같은 방식으로 동작한다.
+enum class EditTarget { None, Search, GroupName };
 
 struct Button {
     ButtonId id = ButtonId::None;
@@ -162,6 +179,10 @@ private:
     void InsertSearchText(wchar_t c);
     void OnSearchKey(WPARAM key);
     void UpdateImePosition();
+    // 지금 글자를 받고 있는 문자열. 없으면 nullptr.
+    std::wstring* ActiveText();
+    const std::wstring* ActiveText() const;
+    void EndEditing();
     float LaneHeight(LcChannelType t) const;
     float TotalLaneHeight() const;
     float TotalRailHeight() const;
@@ -239,6 +260,19 @@ private:
     float RailHeaderHeight() const;
     void ToggleGroup(uint32_t group);
     void SetGroupSelected(uint32_t group, bool on);
+    // ---- 사용자 그룹 ----
+    void ResolveGroups();                       // 이름 -> 지금 파일의 채널 번호
+    void EnsureDefaultGroups();                 // 설정이 없으면 10개씩 묶어 만든다
+    void AddSelectedToGroup(uint32_t group);    // 고른 IO 를 그 그룹으로 옮긴다
+    void MoveChannelToGroup(uint32_t ch, uint32_t group);
+    void NewGroup();
+    void DeleteGroup(uint32_t group);
+    void GroupsChanged();                       // 다시 풀고 저장한다
+    std::wstring GroupsConfigPath() const;
+    void LoadGroups();
+    void SaveGroups() const;
+    const std::vector<uint32_t>& GroupChannels(uint32_t group) const;
+    std::wstring GroupTitle(uint32_t group) const;
     // 그룹 안에서 목록에 보이는 채널 수와 그중 선택된 수
     void GroupCounts(uint32_t group, uint32_t& visible, uint32_t& selected) const;
     // Shift/Ctrl 조합에 따른 선택 갱신
@@ -279,7 +313,6 @@ private:
 
     // ---- 상태 ----
     HWND hwnd_ = nullptr;
-    bool searchFocused_ = false;
     size_t caret_ = 0;                 // 검색 문자열 안에서의 글자 위치
     unsigned long long caretTick_ = 0; // 깜빡임 기준 시각
     float dpi_ = 96.0f;
@@ -341,8 +374,21 @@ private:
     float controlsH_ = 34.0f;   // 줄바꿈 결과로 정해지는 컨트롤 줄 높이 (픽셀)
 
     std::vector<RailRow> railRows_;
-    std::vector<bool> groupOpen_;
+    std::vector<Group> groups_;
+    // groups_ 와 같은 길이 + 마지막 한 칸은 어느 그룹에도 없는 채널("미분류").
+    // 파일을 열 때와 그룹을 고칠 때 다시 만든다.
+    std::vector<std::vector<uint32_t>> groupChannels_;
+    bool ungroupedOpen_ = true;
     int32_t anchorChannel_ = -1;   // Shift 범위 선택의 기준점
+
+    EditTarget editTarget_ = EditTarget::None;
+    uint32_t editGroup_ = 0;
+    // 목록에서 끌어다 옮기는 중
+    bool railDragging_ = false;
+    bool dragOnCheckbox_ = false;
+    int32_t dragChannel_ = -1;
+    int32_t dropGroup_ = -1;
+    float railDownY_ = 0.0f;
 
     std::wstring query_;
     int filter_ = -1;  // -1 = 전체, -2 = 달라진 채널만, 아니면 LcChannelType

@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
+#include <unordered_map>
 #include <limits>
 
 namespace app {
@@ -80,6 +82,13 @@ std::wstring Ellipsize(IDWriteFactory* dw, std::wstring s, IDWriteTextFormat* f,
     if (MeasureText(dw, s, f) <= maxw) return s;
     while (s.size() > 1 && MeasureText(dw, s + L"…", f) > maxw) s.pop_back();
     return s + L"…";
+}
+
+std::wstring trim_ws(const std::wstring& s) {
+    size_t b = 0, e = s.size();
+    while (b < e && (s[b] == L' ' || s[b] == L'\t')) ++b;
+    while (e > b && (s[e - 1] == L' ' || s[e - 1] == L'\t')) --e;
+    return s.substr(b, e - b);
 }
 
 float Px(float v) { return std::floor(v) + 0.5f; }
@@ -169,6 +178,7 @@ bool App::Create(HINSTANCE inst, int show, const wchar_t* initialPath,
     if (!RegisterClassExW(&wc)) return false;
 
     ApplySystemTheme();
+    LoadGroups();   // 지난번에 만들어 둔 그룹 설정
 
     hwnd_ = CreateWindowExW(WS_EX_ACCEPTFILES, kWindowClass, L"IO Log Scope",
                             WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -327,23 +337,49 @@ D2D1_RECT_F App::SearchRect(const Rects& r) const {
     return Rect(r.rail.left + pad, top, r.rail.right - pad, top + S(metrics::kSearchH));
 }
 
+
+// 지금 글자를 받고 있는 문자열. 검색창과 그룹 이름이 같은 코드를 쓴다.
+std::wstring* App::ActiveText() {
+    if (editTarget_ == EditTarget::Search) return &query_;
+    if (editTarget_ == EditTarget::GroupName && editGroup_ < groups_.size()) {
+        return &groups_[editGroup_].name;
+    }
+    return nullptr;
+}
+
+const std::wstring* App::ActiveText() const {
+    return const_cast<App*>(this)->ActiveText();
+}
+
+void App::EndEditing() {
+    const bool wasGroup = editTarget_ == EditTarget::GroupName;
+    editTarget_ = EditTarget::None;
+    caret_ = 0;
+    // 이름을 비워 두면 목록에서 그룹을 찾을 수 없다. 빈 이름은 되돌린다.
+    if (wasGroup && editGroup_ < groups_.size() && trim_ws(groups_[editGroup_].name).empty()) {
+        groups_[editGroup_].name = Fmt(L"그룹 %u", editGroup_ + 1);
+    }
+    if (wasGroup) SaveGroups();
+}
+
 void App::DrawSearchBox(const Rects& r) {
     const D2D1_RECT_F box = SearchRect(r);
     const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(box, S(4.0f), S(4.0f));
     brush_->SetColor(pal_.surface);
     rt_->FillRoundedRectangle(rr, brush_.get());
-    brush_->SetColor(searchFocused_ ? pal_.accent : pal_.hair);
-    rt_->DrawRoundedRectangle(rr, brush_.get(), searchFocused_ ? S(1.6f) : 1.0f);
+    const bool focused = editTarget_ == EditTarget::Search;
+    brush_->SetColor(focused ? pal_.accent : pal_.hair);
+    rt_->DrawRoundedRectangle(rr, brush_.get(), focused ? S(1.6f) : 1.0f);
 
     const float tx = box.left + S(8.0f);
     const D2D1_RECT_F textBox = Rect(tx, box.top, box.right - S(8.0f), box.bottom);
-    if (query_.empty() && !searchFocused_) {
+    if (query_.empty() && !focused) {
         DrawLabel(L"IO 이름으로 거르기", fUi_.get(), textBox, pal_.ink3);
         return;
     }
     DrawLabel(query_, fUi_.get(), textBox, pal_.ink);
 
-    if (!searchFocused_) return;
+    if (!focused) return;
     // 글자 커서. 0.5초 주기로 깜빡인다.
     if (((GetTickCount64() - caretTick_) / 530) % 2 == 0) {
         const std::wstring upto = query_.substr(0, (std::min)(caret_, query_.size()));
@@ -355,49 +391,63 @@ void App::DrawSearchBox(const Rects& r) {
 // 한글은 IME 가 조합해서 WM_CHAR 로 완성된 글자를 보내 준다. 조합 중인 글자가
 // 뜨는 위치만 글자 커서 옆으로 옮겨 준다.
 void App::UpdateImePosition() {
-    if (!searchFocused_) return;
+    if (editTarget_ == EditTarget::None) return;
+    // 조합 중인 글자가 뜨는 자리를 글자 커서 옆으로. 정확한 좌표를 계산하기
+    // 어려운 그룹 이름 편집에서는 검색창 위치를 기준으로 둔다.
     const Rects r = CalcRects();
     const D2D1_RECT_F box = SearchRect(r);
-    const std::wstring upto = query_.substr(0, (std::min)(caret_, query_.size()));
-    const float cx = box.left + S(8.0f) + MeasureText(dw_.get(), upto, fUi_.get());
+    float cx = box.left + S(8.0f);
+    float cy = box.top;
+    if (const std::wstring* t = ActiveText()) {
+        cx += MeasureText(dw_.get(), t->substr(0, (std::min)(caret_, t->size())), fUi_.get());
+    }
+    if (editTarget_ == EditTarget::GroupName) { cx = box.left; cy = box.bottom; }
     if (HIMC imc = ImmGetContext(hwnd_)) {
         COMPOSITIONFORM cf{};
         cf.dwStyle = CFS_POINT;
         cf.ptCurrentPos.x = static_cast<LONG>(cx);
-        cf.ptCurrentPos.y = static_cast<LONG>(box.top);
+        cf.ptCurrentPos.y = static_cast<LONG>(cy);
         ImmSetCompositionWindow(imc, &cf);
         ImmReleaseContext(hwnd_, imc);
     }
 }
 
 void App::InsertSearchText(wchar_t c) {
-    if (query_.size() >= 128) return;
-    caret_ = (std::min)(caret_, query_.size());
-    query_.insert(query_.begin() + static_cast<std::ptrdiff_t>(caret_), c);
+    std::wstring* t = ActiveText();
+    if (!t || t->size() >= 128) return;
+    caret_ = (std::min)(caret_, t->size());
+    t->insert(t->begin() + static_cast<std::ptrdiff_t>(caret_), c);
     ++caret_;
-    scrollRail_ = 0.0f;
+    if (editTarget_ == EditTarget::Search) scrollRail_ = 0.0f;
     caretTick_ = GetTickCount64();
 }
 
 void App::OnSearchKey(WPARAM key) {
-    caret_ = (std::min)(caret_, query_.size());
+    std::wstring* t = ActiveText();
+    if (!t) return;
+    caret_ = (std::min)(caret_, t->size());
     switch (key) {
         case VK_LEFT:  if (caret_ > 0) --caret_; break;
-        case VK_RIGHT: if (caret_ < query_.size()) ++caret_; break;
+        case VK_RIGHT: if (caret_ < t->size()) ++caret_; break;
         case VK_HOME:  caret_ = 0; break;
-        case VK_END:   caret_ = query_.size(); break;
+        case VK_END:   caret_ = t->size(); break;
         case VK_DELETE:
-            if (caret_ < query_.size()) {
-                query_.erase(query_.begin() + static_cast<std::ptrdiff_t>(caret_));
-                scrollRail_ = 0.0f;
+            if (caret_ < t->size()) {
+                t->erase(t->begin() + static_cast<std::ptrdiff_t>(caret_));
+                if (editTarget_ == EditTarget::Search) scrollRail_ = 0.0f;
             }
             break;
         case VK_ESCAPE:
-            if (query_.empty()) { searchFocused_ = false; }
-            else { query_.clear(); caret_ = 0; scrollRail_ = 0.0f; }
+            if (editTarget_ == EditTarget::Search && !t->empty()) {
+                t->clear();
+                caret_ = 0;
+                scrollRail_ = 0.0f;
+            } else {
+                EndEditing();
+            }
             break;
         case VK_RETURN:
-            searchFocused_ = false;
+            EndEditing();
             break;
         default:
             return;
@@ -405,46 +455,10 @@ void App::OnSearchKey(WPARAM key) {
     caretTick_ = GetTickCount64();
 }
 
-float App::LaneHeight(LcChannelType t) const {
-    switch (t) {
-        case LC_CH_DIGITAL: return S(metrics::kLaneDigital);
-        case LC_CH_STATE:   return S(metrics::kLaneState);
-        default:            return S(metrics::kLaneAnalog);
-    }
-}
-
-float App::TotalLaneHeight() const {
-    float total = 0.0f;
-    for (uint32_t i = 0; i < selected_.size(); ++i) {
-        if (selected_[i]) total += LaneHeight(lc_channel_type(ds_, i));
-    }
-    return total;
-}
-
-float App::TotalRailHeight() const {
-    return static_cast<float>(railRows_.size()) * S(metrics::kRowH);
-}
-
-bool App::ChannelVisibleInList(uint32_t ch) const {
-    if (!ds_) return false;
-    // "달라진 것만" 은 값이 바뀐 채널과 이후 로그에서 사라진 채널을 모두 뜻한다.
-    if (filter_ == -2) {
-        const bool missing = ch >= matchB_.size() || matchB_[ch] < 0;
-        if (!missing && !ChannelDiffers(ch)) return false;
-    }
-    if (filter_ >= 0 && static_cast<int>(lc_channel_type(ds_, ch)) != filter_) return false;
-    if (query_.empty()) return true;
-    std::wstring name = lc_channel_name(ds_, ch);
-    std::wstring q = query_;
-    std::transform(name.begin(), name.end(), name.begin(), ::towlower);
-    std::transform(q.begin(), q.end(), q.begin(), ::towlower);
-    return name.find(q) != std::wstring::npos;
-}
 
 // ===========================================================================
-// 데이터
+// (복구) 파일 읽기 · 두 로그 비교 · 레인 계산
 // ===========================================================================
-
 
 // ===========================================================================
 // 배경에서 파일 읽기
@@ -508,63 +522,85 @@ void App::BeginLoad(const std::wstring& path, int slot) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void App::FinishLoad(const std::shared_ptr<LoadJob>& job) {
-    KillTimer(hwnd_, kTimerSpin);
-    loadJob_.reset();
-    if (loadThread_.joinable()) loadThread_.join();
+bool App::ChannelDiffers(uint32_t ch) const {
+    return ch < diffCount_.size() && diffCount_[ch] > 0;
+}
 
-    // 대기열이 있으면 이번 것을 처리한 뒤 이어서 읽는다.
-    auto start_queued = [this]() {
-        if (loadQueue_.empty()) return;
-        const auto next = loadQueue_.front();
-        loadQueue_.erase(loadQueue_.begin());
-        BeginLoad(next.first, next.second);
-    };
-
-    if (job->status != LC_OK || !job->ds) {
-        if (job->ds) lc_close(job->ds);
-        message_ = (job->slot == 1 ? std::wstring(L"이후 로그를 열지 못했습니다 — ")
-                                   : std::wstring(L"로그를 열지 못했습니다 — ")) +
-                   lc_status_text(job->status);
-        messageIsError_ = true;
-        loadQueue_.clear();   // 앞의 것이 실패했으면 뒤따르는 비교도 의미가 없다
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        return;
+bool App::ChannelVisibleInList(uint32_t ch) const {
+    if (!ds_) return false;
+    // "달라진 것만" 은 값이 바뀐 채널과 이후 로그에서 사라진 채널을 모두 뜻한다.
+    if (filter_ == -2) {
+        const bool missing = ch >= matchB_.size() || matchB_[ch] < 0;
+        if (!missing && !ChannelDiffers(ch)) return false;
     }
+    if (filter_ >= 0 && static_cast<int>(lc_channel_type(ds_, ch)) != filter_) return false;
+    if (query_.empty()) return true;
+    std::wstring name = lc_channel_name(ds_, ch);
+    std::wstring q = query_;
+    std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+    std::transform(q.begin(), q.end(), q.begin(), ::towlower);
+    return name.find(q) != std::wstring::npos;
+}
 
-    const size_t slash = job->path.find_last_of(L"\\/");
-    const std::wstring name =
-        (slash == std::wstring::npos) ? job->path : job->path.substr(slash + 1);
+void App::CloseCompare() {
+    if (dsB_) { lc_close(dsB_); dsB_ = nullptr; }
+    fileNameB_.clear();
+    lastPathB_.clear();
+    extraB_.clear();
+    compareOffset_ = 0.0;
+    matchB_.clear();
+    diffCount_.clear();
+    cmpLo_.clear(); cmpHi_.clear();
+    diffLo_.clear(); diffHi_.clear();
+    compareSummary_.clear();
+    if (filter_ == -2) filter_ = -1;
+}
 
-    if (job->slot == 1) {
-        const std::wstring keep = job->path;
-        CloseCompare();
-        dsB_ = job->ds;
-        fileNameB_ = name;
-        lastPathB_ = keep;
-        RebuildComparison();
-    } else {
-        CloseCompare();
-        CloseDataset();
-        ds_ = job->ds;
-        lastPath_ = job->path;
-        fileName_ = name;
+void App::CloseDataset() {
+    if (ds_) { lc_close(ds_); ds_ = nullptr; }
+    matchB_.clear();
+    diffCount_.clear();
+    selected_.clear();
+    hasA_ = hasB_ = false;
+    scrollPlot_ = scrollRail_ = 0.0f;
+}
 
-        const uint32_t n = lc_channel_count(ds_);
-        // 아무것도 선택하지 않은 채로 시작한다. 200채널을 한꺼번에 그려 놓고
-        // 지우는 것보다, 볼 것을 골라 담는 쪽이 빠르다.
-        selected_.assign(n, false);
-        anchorChannel_ = -1;
-        groupOpen_.clear();
-        ResetViewToData();
-
-        message_ = lc_notes(ds_);
-        if (!message_.empty()) message_ += L" ";
-        message_ += Fmt(L"채널 %u개를 읽었습니다. 왼쪽에서 볼 IO 를 고르세요.", n);
-        messageIsError_ = false;
+// 이후 로그를 이전 로그의 시각 t 에서 읽는다.
+//
+// 두 로그의 시간값이 같은 기준일 거라고 가정하지 않는다. 절대 시각으로 찍힌
+// 로그라면 측정한 날짜부터 다르다. 그래서 각자의 시작점을 0 으로 놓고, 시작
+// 이후 경과 시간으로 맞춘다.
+double App::CompareValueAt(uint32_t ch, double t) const {
+    if (!dsB_ || ch >= matchB_.size() || matchB_[ch] < 0) {
+        return std::numeric_limits<double>::quiet_NaN();
     }
-    InvalidateRect(hwnd_, nullptr, FALSE);
-    start_queued();
+    const double* ta = lc_times(ds_);
+    const double* tb = lc_times(dsB_);
+    if (!ta || !tb) return std::numeric_limits<double>::quiet_NaN();
+    // compareOffset_ 은 사용자가 맞춘 보정값. 두 로그의 시작 시각이 정말로 다를 때
+    // (트리거 시점이 어긋난 경우 등) 이걸로 밀어 맞춘다.
+    return lc_sample_at(dsB_, static_cast<uint32_t>(matchB_[ch]),
+                        (t - ta[0]) + tb[0] + compareOffset_);
+}
+
+double App::DiffValueAt(uint32_t ch, double t) const {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const int idx = IndexAt(t);
+    if (idx < 0) return nan;
+    const double* av = lc_channel_values(ds_, ch);
+    if (!av) return nan;
+    const double a = av[idx];
+    const double b = CompareValueAt(ch, t);
+    if (!std::isfinite(a) || !std::isfinite(b)) return nan;
+
+    if (lc_channel_type(ds_, ch) == LC_CH_STATE) {
+        // 상태 값은 로그마다 번호가 다르게 매겨진다. 이름으로 비교해야 한다.
+        const std::wstring sa = lc_state_name(ds_, ch, static_cast<uint32_t>(a));
+        const std::wstring sb =
+            lc_state_name(dsB_, static_cast<uint32_t>(matchB_[ch]), static_cast<uint32_t>(b));
+        return (sa == sb) ? 0.0 : 1.0;
+    }
+    return b - a;
 }
 
 void App::DrawLoadingOverlay(const Rects& r) {
@@ -619,29 +655,137 @@ void App::DrawLoadingOverlay(const Rects& r) {
     }
 }
 
-void App::CloseDataset() {
-    if (ds_) { lc_close(ds_); ds_ = nullptr; }
-    matchB_.clear();
-    diffCount_.clear();
-    selected_.clear();
-    hasA_ = hasB_ = false;
-    scrollPlot_ = scrollRail_ = 0.0f;
+void App::FinishLoad(const std::shared_ptr<LoadJob>& job) {
+    KillTimer(hwnd_, kTimerSpin);
+    loadJob_.reset();
+    if (loadThread_.joinable()) loadThread_.join();
+
+    // 대기열이 있으면 이번 것을 처리한 뒤 이어서 읽는다.
+    auto start_queued = [this]() {
+        if (loadQueue_.empty()) return;
+        const auto next = loadQueue_.front();
+        loadQueue_.erase(loadQueue_.begin());
+        BeginLoad(next.first, next.second);
+    };
+
+    if (job->status != LC_OK || !job->ds) {
+        if (job->ds) lc_close(job->ds);
+        message_ = (job->slot == 1 ? std::wstring(L"이후 로그를 열지 못했습니다 — ")
+                                   : std::wstring(L"로그를 열지 못했습니다 — ")) +
+                   lc_status_text(job->status);
+        messageIsError_ = true;
+        loadQueue_.clear();   // 앞의 것이 실패했으면 뒤따르는 비교도 의미가 없다
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    const size_t slash = job->path.find_last_of(L"\\/");
+    const std::wstring name =
+        (slash == std::wstring::npos) ? job->path : job->path.substr(slash + 1);
+
+    if (job->slot == 1) {
+        const std::wstring keep = job->path;
+        CloseCompare();
+        dsB_ = job->ds;
+        fileNameB_ = name;
+        lastPathB_ = keep;
+        RebuildComparison();
+    } else {
+        CloseCompare();
+        CloseDataset();
+        ds_ = job->ds;
+        lastPath_ = job->path;
+        fileName_ = name;
+
+        const uint32_t n = lc_channel_count(ds_);
+        // 아무것도 선택하지 않은 채로 시작한다. 200채널을 한꺼번에 그려 놓고
+        // 지우는 것보다, 볼 것을 골라 담는 쪽이 빠르다.
+        selected_.assign(n, false);
+        anchorChannel_ = -1;
+        // 저장된 그룹이 없으면 예전처럼 10개씩 묶어 시작한다.
+        EnsureDefaultGroups();
+        ResolveGroups();
+        ResetViewToData();
+
+        message_ = lc_notes(ds_);
+        if (!message_.empty()) message_ += L" ";
+        message_ += Fmt(L"채널 %u개를 읽었습니다. 왼쪽에서 볼 IO 를 고르세요.", n);
+        messageIsError_ = false;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    start_queued();
 }
+
+float App::LaneHeight(LcChannelType t) const {
+    switch (t) {
+        case LC_CH_DIGITAL: return S(metrics::kLaneDigital);
+        case LC_CH_STATE:   return S(metrics::kLaneState);
+        default:            return S(metrics::kLaneAnalog);
+    }
+}
+
+void App::LoadComparePath(const std::wstring& path) { BeginLoad(path, 1); }
 
 void App::LoadPath(const std::wstring& path) { BeginLoad(path, 0); }
 
-void App::CloseCompare() {
-    if (dsB_) { lc_close(dsB_); dsB_ = nullptr; }
-    fileNameB_.clear();
-    lastPathB_.clear();
-    extraB_.clear();
-    compareOffset_ = 0.0;
-    matchB_.clear();
-    diffCount_.clear();
-    cmpLo_.clear(); cmpHi_.clear();
-    diffLo_.clear(); diffHi_.clear();
-    compareSummary_.clear();
-    if (filter_ == -2) filter_ = -1;
+std::wstring App::MetricBadge(uint32_t ch) const {
+    if (ch >= diffStats_.size() || !diffStats_[ch].matched) return L"삭제";
+    const DiffStats& st = diffStats_[ch];
+    if (st.samples == 0) return L"동일";
+    switch (metric_) {
+        case DiffMetric::Samples:  return Fmt(L"Δ%u", st.samples);
+        case DiffMetric::TimeFrac: return Fmt(L"%.1f%%", st.timeFrac * 100.0);
+        case DiffMetric::Peak:     return L"↕" + FormatNumber(st.peak);
+        case DiffMetric::Mean:     return L"평균 " + FormatNumber(st.mean);
+        case DiffMetric::Rms:      return L"RMS " + FormatNumber(st.rms);
+        case DiffMetric::Area:     return L"∫ " + FormatNumber(st.area);
+        case DiffMetric::Runs:     return Fmt(L"%u구간", st.runs);
+    }
+    return L"";
+}
+
+const wchar_t* App::MetricName() const {
+    switch (metric_) {
+        case DiffMetric::Samples:  return L"다른 샘플 수";
+        case DiffMetric::TimeFrac: return L"다른 시간 비율";
+        case DiffMetric::Peak:     return L"최대 차이";
+        case DiffMetric::Mean:     return L"평균 차이";
+        case DiffMetric::Rms:      return L"RMS 차이";
+        case DiffMetric::Area:     return L"차이 면적";
+        case DiffMetric::Runs:     return L"다른 구간 수";
+    }
+    return L"";
+}
+
+double App::MetricValue(uint32_t ch) const {
+    if (ch >= diffStats_.size()) return 0.0;
+    const DiffStats& st = diffStats_[ch];
+    switch (metric_) {
+        case DiffMetric::Samples:  return st.samples;
+        case DiffMetric::TimeFrac: return st.timeFrac;
+        case DiffMetric::Peak:     return st.peak;
+        case DiffMetric::Mean:     return st.mean;
+        case DiffMetric::Rms:      return st.rms;
+        case DiffMetric::Area:     return st.area;
+        case DiffMetric::Runs:     return st.runs;
+    }
+    return 0.0;
+}
+
+void App::OpenCompareDialog() {
+    if (!ds_) {
+        message_ = L"먼저 이전 로그를 여세요. 그 다음에 비교할 이후 로그를 엽니다.";
+        messageIsError_ = true;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    const std::wstring path = PickLogFile(L"비교할 이후 로그 열기");
+    if (!path.empty()) LoadComparePath(path);
+}
+
+void App::OpenFileDialog() {
+    const std::wstring path = PickLogFile(L"로그 파일 열기 (이전 로그)");
+    if (!path.empty()) LoadPath(path);
 }
 
 std::wstring App::PickLogFile(const wchar_t* title) {
@@ -667,66 +811,6 @@ std::wstring App::PickLogFile(const wchar_t* title) {
     std::wstring path = raw;
     CoTaskMemFree(raw);
     return path;
-}
-
-void App::OpenFileDialog() {
-    const std::wstring path = PickLogFile(L"로그 파일 열기 (이전 로그)");
-    if (!path.empty()) LoadPath(path);
-}
-
-void App::OpenCompareDialog() {
-    if (!ds_) {
-        message_ = L"먼저 이전 로그를 여세요. 그 다음에 비교할 이후 로그를 엽니다.";
-        messageIsError_ = true;
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        return;
-    }
-    const std::wstring path = PickLogFile(L"비교할 이후 로그 열기");
-    if (!path.empty()) LoadComparePath(path);
-}
-
-void App::LoadComparePath(const std::wstring& path) { BeginLoad(path, 1); }
-
-// 이후 로그를 이전 로그의 시각 t 에서 읽는다.
-//
-// 두 로그의 시간값이 같은 기준일 거라고 가정하지 않는다. 절대 시각으로 찍힌
-// 로그라면 측정한 날짜부터 다르다. 그래서 각자의 시작점을 0 으로 놓고, 시작
-// 이후 경과 시간으로 맞춘다.
-double App::CompareValueAt(uint32_t ch, double t) const {
-    if (!dsB_ || ch >= matchB_.size() || matchB_[ch] < 0) {
-        return std::numeric_limits<double>::quiet_NaN();
-    }
-    const double* ta = lc_times(ds_);
-    const double* tb = lc_times(dsB_);
-    if (!ta || !tb) return std::numeric_limits<double>::quiet_NaN();
-    // compareOffset_ 은 사용자가 맞춘 보정값. 두 로그의 시작 시각이 정말로 다를 때
-    // (트리거 시점이 어긋난 경우 등) 이걸로 밀어 맞춘다.
-    return lc_sample_at(dsB_, static_cast<uint32_t>(matchB_[ch]),
-                        (t - ta[0]) + tb[0] + compareOffset_);
-}
-
-double App::DiffValueAt(uint32_t ch, double t) const {
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    const int idx = IndexAt(t);
-    if (idx < 0) return nan;
-    const double* av = lc_channel_values(ds_, ch);
-    if (!av) return nan;
-    const double a = av[idx];
-    const double b = CompareValueAt(ch, t);
-    if (!std::isfinite(a) || !std::isfinite(b)) return nan;
-
-    if (lc_channel_type(ds_, ch) == LC_CH_STATE) {
-        // 상태 값은 로그마다 번호가 다르게 매겨진다. 이름으로 비교해야 한다.
-        const std::wstring sa = lc_state_name(ds_, ch, static_cast<uint32_t>(a));
-        const std::wstring sb =
-            lc_state_name(dsB_, static_cast<uint32_t>(matchB_[ch]), static_cast<uint32_t>(b));
-        return (sa == sb) ? 0.0 : 1.0;
-    }
-    return b - a;
-}
-
-bool App::ChannelDiffers(uint32_t ch) const {
-    return ch < diffCount_.size() && diffCount_[ch] > 0;
 }
 
 void App::RebuildComparison() {
@@ -845,78 +929,228 @@ void App::RebuildComparison() {
     }
 }
 
-const wchar_t* App::MetricName() const {
-    switch (metric_) {
-        case DiffMetric::Samples:  return L"다른 샘플 수";
-        case DiffMetric::TimeFrac: return L"다른 시간 비율";
-        case DiffMetric::Peak:     return L"최대 차이";
-        case DiffMetric::Mean:     return L"평균 차이";
-        case DiffMetric::Rms:      return L"RMS 차이";
-        case DiffMetric::Area:     return L"차이 면적";
-        case DiffMetric::Runs:     return L"다른 구간 수";
+float App::TotalLaneHeight() const {
+    float total = 0.0f;
+    for (uint32_t i = 0; i < selected_.size(); ++i) {
+        if (selected_[i]) total += LaneHeight(lc_channel_type(ds_, i));
     }
-    return L"";
+    return total;
 }
 
-double App::MetricValue(uint32_t ch) const {
-    if (ch >= diffStats_.size()) return 0.0;
-    const DiffStats& st = diffStats_[ch];
-    switch (metric_) {
-        case DiffMetric::Samples:  return st.samples;
-        case DiffMetric::TimeFrac: return st.timeFrac;
-        case DiffMetric::Peak:     return st.peak;
-        case DiffMetric::Mean:     return st.mean;
-        case DiffMetric::Rms:      return st.rms;
-        case DiffMetric::Area:     return st.area;
-        case DiffMetric::Runs:     return st.runs;
-    }
-    return 0.0;
+float App::TotalRailHeight() const {
+    return static_cast<float>(railRows_.size()) * S(metrics::kRowH);
 }
-
-std::wstring App::MetricBadge(uint32_t ch) const {
-    if (ch >= diffStats_.size() || !diffStats_[ch].matched) return L"삭제";
-    const DiffStats& st = diffStats_[ch];
-    if (st.samples == 0) return L"동일";
-    switch (metric_) {
-        case DiffMetric::Samples:  return Fmt(L"Δ%u", st.samples);
-        case DiffMetric::TimeFrac: return Fmt(L"%.1f%%", st.timeFrac * 100.0);
-        case DiffMetric::Peak:     return L"↕" + FormatNumber(st.peak);
-        case DiffMetric::Mean:     return L"평균 " + FormatNumber(st.mean);
-        case DiffMetric::Rms:      return L"RMS " + FormatNumber(st.rms);
-        case DiffMetric::Area:     return L"∫ " + FormatNumber(st.area);
-        case DiffMetric::Runs:     return Fmt(L"%u구간", st.runs);
-    }
-    return L"";
-}
-
 
 // ===========================================================================
-// 왼쪽 목록 — 10개씩 묶은 그룹, Shift 범위 선택
+// 사용자 그룹 — 이름 바꾸기, 구성원 옮기기, 저장
 // ===========================================================================
+
+const std::vector<uint32_t>& App::GroupChannels(uint32_t group) const {
+    static const std::vector<uint32_t> kEmpty;
+    return group < groupChannels_.size() ? groupChannels_[group] : kEmpty;
+}
+
+std::wstring App::GroupTitle(uint32_t group) const {
+    if (group < groups_.size()) return groups_[group].name;
+    return L"미분류";
+}
+
+// 그룹 구성원(이름)을 지금 열린 파일의 채널 번호로 푼다.
+void App::ResolveGroups() {
+    groupChannels_.assign(groups_.size() + 1, {});
+    if (!ds_) return;
+    const uint32_t n = lc_channel_count(ds_);
+
+    // 이름 -> 채널 번호. 같은 이름이 여러 개면 처음 것을 쓴다.
+    std::unordered_map<std::wstring, uint32_t> byName;
+    byName.reserve(n * 2);
+    for (uint32_t ch = 0; ch < n; ++ch) byName.emplace(lc_channel_name(ds_, ch), ch);
+
+    std::vector<bool> taken(n, false);
+    for (size_t g = 0; g < groups_.size(); ++g) {
+        for (const std::wstring& name : groups_[g].members) {
+            auto it = byName.find(name);
+            if (it == byName.end() || taken[it->second]) continue;
+            taken[it->second] = true;
+            groupChannels_[g].push_back(it->second);
+        }
+    }
+    // 어느 그룹에도 없는 채널은 마지막 "미분류" 칸으로.
+    for (uint32_t ch = 0; ch < n; ++ch) {
+        if (!taken[ch]) groupChannels_.back().push_back(ch);
+    }
+}
+
+// 저장된 설정이 없을 때만 부른다. 예전처럼 10개씩 묶어 준다.
+void App::EnsureDefaultGroups() {
+    if (!groups_.empty() || !ds_) return;
+    const uint32_t n = lc_channel_count(ds_);
+    for (uint32_t first = 0; first < n; first += kGroupSize) {
+        Group g;
+        const uint32_t last = (std::min)(first + kGroupSize, n);
+        g.name = Fmt(L"%03u – %03u", first + 1, last);
+        for (uint32_t ch = first; ch < last; ++ch) g.members.push_back(lc_channel_name(ds_, ch));
+        groups_.push_back(std::move(g));
+    }
+}
+
+void App::GroupsChanged() {
+    ResolveGroups();
+    SaveGroups();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::MoveChannelToGroup(uint32_t ch, uint32_t group) {
+    if (!ds_ || group > groups_.size()) return;
+    const std::wstring name = lc_channel_name(ds_, ch);
+    // 어디에 있었든 일단 뺀다. 한 IO 가 두 그룹에 동시에 있으면 헷갈린다.
+    for (Group& g : groups_) {
+        g.members.erase(std::remove(g.members.begin(), g.members.end(), name), g.members.end());
+    }
+    if (group < groups_.size()) groups_[group].members.push_back(name);
+    // group == groups_.size() 면 "미분류" — 어디에도 넣지 않으면 그리로 간다.
+}
+
+void App::AddSelectedToGroup(uint32_t group) {
+    if (!ds_) return;
+    for (uint32_t ch = 0; ch < selected_.size(); ++ch) {
+        if (selected_[ch]) MoveChannelToGroup(ch, group);
+    }
+    GroupsChanged();
+}
+
+void App::NewGroup() {
+    Group g;
+    g.name = Fmt(L"새 그룹 %u", static_cast<uint32_t>(groups_.size() + 1));
+    groups_.push_back(std::move(g));
+    editTarget_ = EditTarget::GroupName;
+    editGroup_ = static_cast<uint32_t>(groups_.size() - 1);
+    caret_ = groups_.back().name.size();
+    caretTick_ = GetTickCount64();
+    GroupsChanged();
+}
+
+void App::DeleteGroup(uint32_t group) {
+    if (group >= groups_.size()) return;   // "미분류" 는 지울 수 없다
+    groups_.erase(groups_.begin() + static_cast<std::ptrdiff_t>(group));
+    if (editTarget_ == EditTarget::GroupName && editGroup_ >= groups_.size()) EndEditing();
+    GroupsChanged();
+}
+
+// ---- 저장 -----------------------------------------------------------------
+//
+// %APPDATA%\LogScope\groups.txt 에 UTF-8(BOM) 로 적는다. 사람이 열어 고칠 수
+// 있는 형식이라, 잘못되면 파일을 지우거나 손으로 고치면 된다.
+//
+//   version 1
+//   group<TAB>이름
+//   io<TAB>DI_00_START
+
+std::wstring App::GroupsConfigPath() const {
+    wchar_t base[MAX_PATH] = {0};
+    const DWORD len = GetEnvironmentVariableW(L"APPDATA", base, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return std::wstring();
+    std::wstring dir = std::wstring(base) + L"\\LogScope";
+    CreateDirectoryW(dir.c_str(), nullptr);   // 이미 있으면 그냥 실패한다
+    return dir + L"\\groups.txt";
+}
+
+void App::SaveGroups() const {
+    const std::wstring path = GroupsConfigPath();
+    if (path.empty()) return;
+
+    std::wstring text = L"# IO Log Scope 그룹 설정 — 지워도 됩니다. 지우면 10개씩 묶은 기본값으로 돌아갑니다.\r\nversion 1\r\n";
+    for (const Group& g : groups_) {
+        text += L"group\t" + g.name + L"\r\n";
+        for (const std::wstring& m : g.members) text += L"io\t" + m + L"\r\n";
+    }
+
+    const int need = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                                         static_cast<int>(text.size()), nullptr, 0, nullptr,
+                                         nullptr);
+    if (need <= 0) return;
+    std::string utf8(static_cast<size_t>(need), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), &utf8[0], need,
+                        nullptr, nullptr);
+
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    const unsigned char bom[3] = {0xEF, 0xBB, 0xBF};
+    WriteFile(h, bom, 3, &written, nullptr);
+    WriteFile(h, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+    CloseHandle(h);
+}
+
+void App::LoadGroups() {
+    groups_.clear();
+    const std::wstring path = GroupsConfigPath();
+    if (path.empty()) return;
+
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(h, &size) || size.QuadPart <= 0 || size.QuadPart > (16 << 20)) {
+        CloseHandle(h);
+        return;
+    }
+    std::string raw(static_cast<size_t>(size.QuadPart), '\0');
+    DWORD got = 0;
+    const BOOL ok = ReadFile(h, &raw[0], static_cast<DWORD>(raw.size()), &got, nullptr);
+    CloseHandle(h);
+    if (!ok) return;
+    raw.resize(got);
+    if (raw.size() >= 3 && static_cast<unsigned char>(raw[0]) == 0xEF) raw.erase(0, 3);
+
+    const int need = MultiByteToWideChar(CP_UTF8, 0, raw.data(), static_cast<int>(raw.size()),
+                                         nullptr, 0);
+    if (need <= 0) return;
+    std::wstring text(static_cast<size_t>(need), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, raw.data(), static_cast<int>(raw.size()), &text[0], need);
+
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t end = text.find(L'\n', pos);
+        if (end == std::wstring::npos) end = text.size();
+        std::wstring line = text.substr(pos, end - pos);
+        pos = end + 1;
+        while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
+        if (line.empty() || line[0] == L'#') continue;
+
+        const size_t tab = line.find(L'\t');
+        if (tab == std::wstring::npos) continue;
+        const std::wstring key = line.substr(0, tab);
+        const std::wstring value = line.substr(tab + 1);
+        if (key == L"group") {
+            Group g;
+            g.name = value;
+            groups_.push_back(std::move(g));
+        } else if (key == L"io" && !groups_.empty()) {
+            groups_.back().members.push_back(value);
+        }
+    }
+}
 
 void App::GroupCounts(uint32_t group, uint32_t& visible, uint32_t& selected) const {
     visible = 0;
     selected = 0;
-    if (!ds_) return;
-    const uint32_t n = lc_channel_count(ds_);
-    const uint32_t first = group * kGroupSize;
-    for (uint32_t ch = first; ch < (std::min)(first + kGroupSize, n); ++ch) {
+    for (uint32_t ch : GroupChannels(group)) {
         if (!ChannelVisibleInList(ch)) continue;
         ++visible;
-        if (selected_[ch]) ++selected;
+        if (ch < selected_.size() && selected_[ch]) ++selected;
     }
 }
 
 void App::ToggleGroup(uint32_t group) {
-    if (group < groupOpen_.size()) groupOpen_[group] = !groupOpen_[group];
+    if (group < groups_.size()) groups_[group].open = !groups_[group].open;
+    else ungroupedOpen_ = !ungroupedOpen_;
 }
 
 void App::SetGroupSelected(uint32_t group, bool on) {
-    if (!ds_) return;
-    const uint32_t n = lc_channel_count(ds_);
-    const uint32_t first = group * kGroupSize;
-    for (uint32_t ch = first; ch < (std::min)(first + kGroupSize, n); ++ch) {
-        if (ChannelVisibleInList(ch)) selected_[ch] = on;
+    for (uint32_t ch : GroupChannels(group)) {
+        if (ChannelVisibleInList(ch) && ch < selected_.size()) selected_[ch] = on;
     }
 }
 
@@ -925,28 +1159,28 @@ void App::SetGroupSelected(uint32_t group, bool on) {
 void App::RebuildRailRows() {
     railRows_.clear();
     if (!ds_) return;
+    if (groupChannels_.size() != groups_.size() + 1) ResolveGroups();
 
-    const uint32_t n = lc_channel_count(ds_);
-    const uint32_t groups = (n + kGroupSize - 1) / kGroupSize;
-    if (groupOpen_.size() != groups) groupOpen_.assign(groups, true);
-
-    for (uint32_t g = 0; g < groups; ++g) {
+    for (uint32_t g = 0; g <= groups_.size(); ++g) {
         uint32_t visible = 0, selected = 0;
         GroupCounts(g, visible, selected);
-        if (visible == 0) continue;   // 필터에 걸리는 채널이 없는 그룹은 숨긴다
-        railRows_.push_back({RailRow::Kind::Group, g});
-        if (!groupOpen_[g]) continue;
-        const uint32_t first = g * kGroupSize;
-        for (uint32_t ch = first; ch < (std::min)(first + kGroupSize, n); ++ch) {
-            if (ChannelVisibleInList(ch)) railRows_.push_back({RailRow::Kind::Channel, ch});
+        // 빈 그룹도 보여 준다 — 여기에 IO 를 끌어다 넣어야 하니까. 다만 "미분류"
+        // 는 비어 있으면 굳이 자리를 차지할 이유가 없다.
+        if (visible == 0 && g == groups_.size()) continue;
+        railRows_.push_back({RailRow::Kind::Group, g, g});
+
+        const bool open = (g < groups_.size()) ? groups_[g].open : ungroupedOpen_;
+        if (!open) continue;
+        for (uint32_t ch : GroupChannels(g)) {
+            if (ChannelVisibleInList(ch)) railRows_.push_back({RailRow::Kind::Channel, ch, g});
         }
     }
 
     // 이후 로그에만 있는 채널. 이전 로그에 짝이 없으니 그릴 수는 없지만,
     // "무엇이 새로 생겼는지" 는 두 로그를 견줄 때 꼭 알아야 하는 정보다.
     if (!extraB_.empty()) {
-        railRows_.push_back({RailRow::Kind::ExtraHeader, 0});
-        for (uint32_t b : extraB_) railRows_.push_back({RailRow::Kind::ExtraChannel, b});
+        railRows_.push_back({RailRow::Kind::ExtraHeader, 0, 0});
+        for (uint32_t b : extraB_) railRows_.push_back({RailRow::Kind::ExtraChannel, b, 0});
     }
 }
 
@@ -1520,6 +1754,7 @@ void App::RebuildRailButtons(const Rects& r) {
     addLink(ButtonId::SelectNone, L"전체 해제");
     addLink(ButtonId::GroupsExpand, L"펴기");
     addLink(ButtonId::GroupsCollapse, L"접기");
+    addLink(ButtonId::AddToNewGroup, L"고른 IO로 새 그룹");
 }
 
 void App::Render() {
@@ -1542,8 +1777,8 @@ void App::Render() {
     DrawStatus(r);
     if (IsLoading()) DrawLoadingOverlay(r);
 
-    // 글자 커서가 깜빡이려면 검색 중일 때만 주기적으로 다시 그리면 된다.
-    if (searchFocused_) SetTimer(hwnd_, kTimerCaret, 260, nullptr);
+    // 글자 커서가 깜빡이려면 글자를 고치는 중에만 주기적으로 다시 그리면 된다.
+    if (editTarget_ != EditTarget::None) SetTimer(hwnd_, kTimerCaret, 260, nullptr);
     else KillTimer(hwnd_, kTimerCaret);
 
     if (rt_->EndDraw() == static_cast<HRESULT>(D2DERR_RECREATE_TARGET)) DiscardDeviceResources();
@@ -1636,14 +1871,17 @@ void App::DrawRail(const Rects& r) {
         if (row.kind == RailRow::Kind::Group) {
             uint32_t visible = 0, selected = 0;
             GroupCounts(row.index, visible, selected);
-            const bool open = row.index < groupOpen_.size() && groupOpen_[row.index];
+            const bool isUser = row.index < groups_.size();
+            const bool open = isUser ? groups_[row.index].open : ungroupedOpen_;
+            const bool dropHere = railDragging_ && dropGroup_ == static_cast<int32_t>(row.index);
 
-            Fill(Rect(r.rail.left, top, r.rail.right, top + rowH), pal_.hover);
+            Fill(Rect(r.rail.left, top, r.rail.right, top + rowH),
+                 dropHere ? pal_.accent : pal_.hover);
 
             // 펼침 표시 삼각형
             const float tx = r.rail.left + S(10.0f);
             const float ty = top + rowH * 0.5f;
-            brush_->SetColor(pal_.ink2);
+            brush_->SetColor(dropHere ? pal_.onAccent : pal_.ink2);
             Path tri;
             if (tri.Begin(d2d_.get())) {
                 if (open) {
@@ -1660,14 +1898,14 @@ void App::DrawRail(const Rects& r) {
                 if (tri.End()) rt_->DrawGeometry(tri.geo.get(), brush_.get(), S(1.4f));
             }
 
-            // 그룹 전체 선택 상자 (일부만 선택되면 반쯤 찬 표시)
+            // 그룹 전체 선택 상자 (일부만 선택되면 가로줄로 표시)
             const D2D1_RECT_F cb = Rect(r.rail.left + S(26.0f), top + (rowH - box) * 0.5f,
                                         r.rail.left + S(26.0f) + box, top + (rowH + box) * 0.5f);
             const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cb, S(3.0f), S(3.0f));
             if (selected == visible && visible > 0) {
-                brush_->SetColor(pal_.accent);
+                brush_->SetColor(dropHere ? pal_.onAccent : pal_.accent);
                 rt_->FillRoundedRectangle(crr, brush_.get());
-                brush_->SetColor(pal_.onAccent);
+                brush_->SetColor(dropHere ? pal_.accent : pal_.onAccent);
                 rt_->DrawLine(D2D1::Point2F(cb.left + box * 0.24f, cb.top + box * 0.52f),
                               D2D1::Point2F(cb.left + box * 0.44f, cb.top + box * 0.74f),
                               brush_.get(), S(1.6f));
@@ -1675,23 +1913,58 @@ void App::DrawRail(const Rects& r) {
                               D2D1::Point2F(cb.left + box * 0.78f, cb.top + box * 0.28f),
                               brush_.get(), S(1.6f));
             } else {
-                brush_->SetColor(pal_.hair);
+                brush_->SetColor(dropHere ? pal_.onAccent : pal_.hair);
                 rt_->DrawRoundedRectangle(crr, brush_.get(), 1.0f);
                 if (selected > 0) {
                     Fill(Rect(cb.left + S(3.0f), top + rowH * 0.5f - S(1.0f),
                               cb.right - S(3.0f), top + rowH * 0.5f + S(1.0f)),
-                         pal_.accent);
+                         dropHere ? pal_.onAccent : pal_.accent);
                 }
             }
 
-            const uint32_t first = row.index * kGroupSize + 1;
-            const uint32_t last = (std::min)(first + kGroupSize - 1, lc_channel_count(ds_));
-            DrawLabel(Fmt(L"%03u – %03u", first, last), fMono_.get(),
-                      Rect(cb.right + S(9.0f), top, r.rail.right - S(60.0f), top + rowH),
-                      pal_.ink);
+            // 이름. 사용자가 만든 그룹은 눌러서 고칠 수 있다.
+            const bool editingThis = editTarget_ == EditTarget::GroupName &&
+                                     editGroup_ == row.index && isUser;
+            const float nameL = cb.right + S(9.0f);
+            const float nameR = r.rail.right - (isUser ? S(96.0f) : S(56.0f));
+            if (editingThis) {
+                const D2D1_RECT_F eb = Rect(nameL - S(4.0f), top + S(2.0f), nameR,
+                                            top + rowH - S(2.0f));
+                brush_->SetColor(pal_.surface);
+                rt_->FillRoundedRectangle(D2D1::RoundedRect(eb, S(3.0f), S(3.0f)), brush_.get());
+                brush_->SetColor(pal_.accent);
+                rt_->DrawRoundedRectangle(D2D1::RoundedRect(eb, S(3.0f), S(3.0f)), brush_.get(),
+                                          S(1.4f));
+                DrawLabel(groups_[row.index].name, fMono_.get(),
+                          Rect(nameL, top, nameR - S(4.0f), top + rowH), pal_.ink);
+                if (((GetTickCount64() - caretTick_) / 530) % 2 == 0) {
+                    const std::wstring upto = groups_[row.index].name.substr(
+                        0, (std::min)(caret_, groups_[row.index].name.size()));
+                    const float cx2 = nameL + MeasureText(dw_.get(), upto, fMono_.get());
+                    StrokeLine(Px(cx2), top + S(5.0f), Px(cx2), top + rowH - S(5.0f), pal_.ink,
+                               S(1.4f));
+                }
+            } else {
+                DrawLabel(Ellipsize(dw_.get(), GroupTitle(row.index), fMono_.get(),
+                                    nameR - nameL),
+                          fMono_.get(), Rect(nameL, top, nameR, top + rowH),
+                          dropHere ? pal_.onAccent : pal_.ink);
+            }
+
+            // 오른쪽: 고른 IO 담기(+), 그룹 지우기(×), 개수
+            if (isUser && !editingThis) {
+                DrawLabel(L"＋", fUiCenter_.get(),
+                          Rect(r.rail.right - S(94.0f), top, r.rail.right - S(72.0f),
+                               top + rowH),
+                          dropHere ? pal_.onAccent : pal_.accent);
+                DrawLabel(L"×", fUiCenter_.get(),
+                          Rect(r.rail.right - S(72.0f), top, r.rail.right - S(52.0f),
+                               top + rowH),
+                          dropHere ? pal_.onAccent : pal_.ink3);
+            }
             DrawLabel(Fmt(L"%u/%u", selected, visible), fSmallRight_.get(),
-                      Rect(r.rail.right - S(58.0f), top, r.rail.right - S(12.0f), top + rowH),
-                      selected ? pal_.accent : pal_.ink3);
+                      Rect(r.rail.right - S(50.0f), top, r.rail.right - S(10.0f), top + rowH),
+                      dropHere ? pal_.onAccent : (selected ? pal_.accent : pal_.ink3));
             continue;
         }
 
@@ -2545,13 +2818,23 @@ void App::OnButton(ButtonId id) {
             scrollPlot_ = 0.0f;
             break;
         case ButtonId::GroupsExpand:
-            for (size_t i = 0; i < groupOpen_.size(); ++i) groupOpen_[i] = true;
+            for (Group& g : groups_) g.open = true;
+            ungroupedOpen_ = true;
             scrollRail_ = 0.0f;
             break;
         case ButtonId::GroupsCollapse:
-            for (size_t i = 0; i < groupOpen_.size(); ++i) groupOpen_[i] = false;
+            for (Group& g : groups_) g.open = false;
+            ungroupedOpen_ = false;
             scrollRail_ = 0.0f;
             break;
+        case ButtonId::NewGroup: NewGroup(); break;
+        case ButtonId::AddToNewGroup: {
+            // 지금 고른 IO 들을 새 그룹으로 묶는다. 검색으로 걸러서 전체 선택한 뒤
+            // 이 버튼을 누르는 것이 "검색으로 그룹 만들기" 다.
+            NewGroup();
+            AddSelectedToGroup(static_cast<uint32_t>(groups_.size() - 1));
+            break;
+        }
         case ButtonId::FilterAll:     filter_ = -1; scrollRail_ = 0.0f; break;
         case ButtonId::FilterDigital: filter_ = LC_CH_DIGITAL; scrollRail_ = 0.0f; break;
         case ButtonId::FilterAnalog:  filter_ = LC_CH_ANALOG; scrollRail_ = 0.0f; break;
@@ -2590,7 +2873,7 @@ void App::OnLButtonDown(float x, float y, bool shift) {
         const Rects rr = CalcRects();
         const D2D1_RECT_F box = SearchRect(rr);
         if (Inside(box, x, y)) {
-            searchFocused_ = true;
+            editTarget_ = EditTarget::Search;
             caretTick_ = GetTickCount64();
             const float tx = box.left + S(8.0f);
             caret_ = query_.size();
@@ -2604,8 +2887,8 @@ void App::OnLButtonDown(float x, float y, bool shift) {
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
-        if (searchFocused_) {
-            searchFocused_ = false;
+        if (editTarget_ != EditTarget::None) {
+            EndEditing();
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
     }
@@ -2621,36 +2904,51 @@ void App::OnLButtonDown(float x, float y, bool shift) {
     if (ds_ && Inside(r.railList, x, y)) {
         const float rowH = S(metrics::kRowH);
         float ry = r.railList.top - scrollRail_;
-        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
         for (const RailRow& row : railRows_) {
             const bool hit = (y >= ry && y < ry + rowH);
+            const float top = ry;
             ry += rowH;
             if (!hit) continue;
 
             if (row.kind == RailRow::Kind::Group) {
-                // 왼쪽 삼각형 자리를 누르면 펼침, 체크 상자를 누르면 그룹 전체 선택,
-                // 나머지 이름 부분은 펼침으로 친다 (더 자주 쓰는 동작).
+                const bool isUser = row.index < groups_.size();
                 const float boxL = r.rail.left + S(26.0f);
                 const float boxR = boxL + S(12.0f);
                 if (x >= boxL - S(3.0f) && x <= boxR + S(3.0f)) {
                     uint32_t visible = 0, selected = 0;
                     GroupCounts(row.index, visible, selected);
                     SetGroupSelected(row.index, selected < visible);
+                } else if (isUser && x >= r.rail.right - S(94.0f) &&
+                           x < r.rail.right - S(72.0f)) {
+                    AddSelectedToGroup(row.index);        // ＋ 고른 IO 담기
+                } else if (isUser && x >= r.rail.right - S(72.0f) &&
+                           x < r.rail.right - S(52.0f)) {
+                    DeleteGroup(row.index);               // × 그룹 지우기
+                } else if (isUser && x > boxR + S(6.0f) && x < r.rail.right - S(94.0f)) {
+                    // 이름을 누르면 고친다. 두 번 누를 필요 없이 바로 편집 상태로.
+                    editTarget_ = EditTarget::GroupName;
+                    editGroup_ = row.index;
+                    caret_ = groups_[row.index].name.size();
+                    caretTick_ = GetTickCount64();
                 } else {
                     ToggleGroup(row.index);
                 }
             } else if (row.kind == RailRow::Kind::Channel) {
+                // 채널은 누른 자리를 기억만 하고, 손을 뗄 때 판정한다. 그래야 끌어서
+                // 그룹으로 옮기는 동작과 구분된다.
+                dragChannel_ = static_cast<int32_t>(row.index);
+                railDownY_ = y;
+                railDragging_ = false;
+                dropGroup_ = -1;
+                dragShift_ = shift;
                 const float boxL = r.rail.left + S(26.0f);
-                const float boxR = boxL + S(12.0f);
-                const bool onCheckbox = (x >= boxL - S(3.0f) && x <= boxR + S(3.0f));
-                ClickChannel(row.index, shift, ctrl, onCheckbox);
+                dragOnCheckbox_ = (x >= boxL - S(3.0f) && x <= boxL + S(15.0f));
+                SetCapture(hwnd_);
+                (void)top;
+                return;
             }
-            // ExtraHeader / ExtraChannel 은 이전 로그에 짝이 없어 그릴 수 없다.
 
-            const float maxScroll =
-                (std::max)(0.0f, TotalLaneHeight() - (r.plot.bottom - r.plot.top));
-            scrollPlot_ = (std::min)(scrollPlot_, maxScroll);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
@@ -2669,6 +2967,33 @@ void App::OnLButtonDown(float x, float y, bool shift) {
 }
 
 void App::OnLButtonUp(float x, float y, bool shift) {
+    if (dragChannel_ >= 0) {
+        const uint32_t ch = static_cast<uint32_t>(dragChannel_);
+        const bool wasDragging = railDragging_;
+        const int32_t target = dropGroup_;
+        dragChannel_ = -1;
+        railDragging_ = false;
+        dropGroup_ = -1;
+        ReleaseCapture();
+
+        if (wasDragging) {
+            if (target >= 0 && static_cast<uint32_t>(target) <= groups_.size()) {
+                // 여러 개를 골라 둔 상태에서 그중 하나를 끌면 고른 것을 다 옮긴다.
+                if (ch < selected_.size() && selected_[ch]) {
+                    for (uint32_t i = 0; i < selected_.size(); ++i) {
+                        if (selected_[i]) MoveChannelToGroup(i, static_cast<uint32_t>(target));
+                    }
+                } else {
+                    MoveChannelToGroup(ch, static_cast<uint32_t>(target));
+                }
+                GroupsChanged();
+            }
+        } else {
+            ClickChannel(ch, dragShift_, false, dragOnCheckbox_);
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
     if (!dragging_) return;
     dragging_ = false;
     ReleaseCapture();
@@ -2691,6 +3016,30 @@ void App::OnLButtonUp(float x, float y, bool shift) {
 void App::OnMouseMove(float x, float y, bool /*dragging*/) {
     hoverX_ = x;
     hoverY_ = y;
+
+    // 목록에서 채널을 끌고 있는 중이면, 지금 어느 그룹 위에 있는지 계산한다.
+    if (dragChannel_ >= 0) {
+        if (!railDragging_ && std::fabs(y - railDownY_) > S(5.0f)) railDragging_ = true;
+        if (railDragging_) {
+            const Rects rr2 = CalcRects();
+            const float rowH = S(metrics::kRowH);
+            float ry = rr2.railList.top - scrollRail_;
+            dropGroup_ = -1;
+            for (const RailRow& row : railRows_) {
+                if (y >= ry && y < ry + rowH) {
+                    // 그룹 머리 위든 그 그룹의 채널 위든 그 그룹으로 친다.
+                    if (row.kind == RailRow::Kind::Group ||
+                        row.kind == RailRow::Kind::Channel) {
+                        dropGroup_ = static_cast<int32_t>(row.group);
+                    }
+                    break;
+                }
+                ry += rowH;
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+    }
 
     ButtonId hot = ButtonId::None;
     for (const Button& b : buttons_) {
@@ -2856,14 +3205,15 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_CHAR:
-            if (searchFocused_) {
+            if (editTarget_ != EditTarget::None) {
                 const wchar_t c = static_cast<wchar_t>(wp);
-                if (c == 8) {   // 백스페이스
-                    caret_ = (std::min)(caret_, query_.size());
+                std::wstring* t = ActiveText();
+                if (c == 8 && t) {   // 백스페이스
+                    caret_ = (std::min)(caret_, t->size());
                     if (caret_ > 0) {
-                        query_.erase(query_.begin() + static_cast<std::ptrdiff_t>(caret_ - 1));
+                        t->erase(t->begin() + static_cast<std::ptrdiff_t>(caret_ - 1));
                         --caret_;
-                        scrollRail_ = 0.0f;
+                        if (editTarget_ == EditTarget::Search) scrollRail_ = 0.0f;
                         caretTick_ = GetTickCount64();
                     }
                 } else if (c >= 0x20) {
@@ -2877,9 +3227,9 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_KEYDOWN:
             if (wp == 'O' && (GetKeyState(VK_CONTROL) & 0x8000)) { OpenFileDialog(); return 0; }
-            if (searchFocused_) {
-                // 검색 중에는 방향키가 글자 커서를 옮긴다. 시간축으로 새어 나가면
-                // 글자를 지우려다 그래프가 움직인다.
+            if (editTarget_ != EditTarget::None) {
+                // 글자를 고치는 중에는 방향키가 글자 커서를 옮긴다. 시간축으로
+                // 새어 나가면 글자를 지우려다 그래프가 움직인다.
                 OnSearchKey(wp);
                 UpdateImePosition();
                 InvalidateRect(hwnd_, nullptr, FALSE);

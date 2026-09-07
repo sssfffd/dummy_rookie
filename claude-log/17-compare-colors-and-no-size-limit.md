@@ -1,7 +1,7 @@
 # 17 · 이전/이후 색 구분, 파일 크기 상한 제거
 
 - **날짜** 2026-09-06
-- **커밋** 이 커밋
+- **커밋** [`80885e5`](../../../commit/80885e5) Separate before/after colors and drop the size limits
 - **바뀐 파일** `src/app/theme.h`, `src/app/app.cpp`, `src/app/app.h`, `src/core/include/logcore/logcore.h`, `src/core/dataset.h`, `src/core/dataset.cpp`, `src/core/csv_reader.cpp`, `src/core/xlsx_reader.cpp`, `src/core/logcore.cpp`, `tests/logcore_test.cpp`, `README.md`, `docs/SECURITY.md`
 
 ## 요청
