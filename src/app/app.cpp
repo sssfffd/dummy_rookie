@@ -302,13 +302,13 @@ void App::DiscardDeviceResources() {
 //   [칩 2행]     22        비교 중일 때만 — 달라진 것만
 //   [선택 줄]    22        전체 선택 / 전체 해제 / 그룹 펴기·접기 / n개 선택
 //
-float App::RailHeaderHeight() const {
-    float h = S(6.0f) + S(16.0f) + S(metrics::kSearchH) + S(8.0f);
-    h += S(22.0f);                          // 칩 1행
-    if (HasCompare()) h += S(26.0f);        // 칩 2행 (줄바꿈 여유 포함)
-    h += S(6.0f) + S(22.0f) + S(8.0f);      // 선택 줄
-    return h;
+float App::RailWidth(float clientWidth) const {
+    return (std::min)(S(metrics::kRailW), clientWidth * 0.42f);
 }
+
+// 실제로 배치한 버튼에서 나온 높이를 그대로 쓴다. 예전에는 이 값을 손으로
+// 추정했고, 버튼이 하나 늘 때마다 목록과 겹쳤다.
+float App::RailHeaderHeight() const { return railHeaderH_; }
 
 Rects App::CalcRects() const {
     RECT rc{};
@@ -321,7 +321,7 @@ Rects App::CalcRects() const {
     // 버튼이 늘어나 한 줄에 안 들어가므로 보기·확대 컨트롤은 아래 줄로 뺀다.
     r.controls = Rect(0, r.toolbar.bottom, w, r.toolbar.bottom + controlsH_);
     r.status = Rect(0, h - S(metrics::kStatusH), w, h);
-    const float railW = (std::min)(S(metrics::kRailW), w * 0.42f);
+    const float railW = RailWidth(w);
     r.rail = Rect(0, r.controls.bottom, railW, r.status.top);
     r.axis = Rect(r.rail.right, r.status.top - S(metrics::kAxisH), w, r.status.top);
     r.plot = Rect(r.rail.right, r.controls.bottom, w, r.axis.top);
@@ -1019,6 +1019,18 @@ void App::AddSelectedToGroup(uint32_t group) {
     GroupsChanged();
 }
 
+// 그룹 순서를 바꾼다. to 가 groups_.size() 면 맨 뒤로 보낸다.
+void App::MoveGroup(uint32_t from, uint32_t to) {
+    if (from >= groups_.size() || from == to) return;
+    Group moved = std::move(groups_[from]);
+    groups_.erase(groups_.begin() + static_cast<std::ptrdiff_t>(from));
+    if (to > from) --to;   // 앞의 항목이 빠졌으니 목표 자리도 한 칸 당겨진다
+    to = (std::min)(to, static_cast<uint32_t>(groups_.size()));
+    groups_.insert(groups_.begin() + static_cast<std::ptrdiff_t>(to), std::move(moved));
+    if (editTarget_ == EditTarget::GroupName) EndEditing();
+    GroupsChanged();
+}
+
 void App::NewGroup() {
     Group g;
     g.name = Fmt(L"새 그룹 %u", static_cast<uint32_t>(groups_.size() + 1));
@@ -1188,10 +1200,29 @@ void App::ClickChannel(uint32_t ch, bool shift, bool ctrl, bool onCheckbox) {
     if (!ds_ || ch >= selected_.size()) return;
 
     if (shift && anchorChannel_ >= 0) {
-        // 기준점부터 여기까지 한 번에 켠다. 목록에 보이는 것만 대상으로 한다.
-        const uint32_t a = static_cast<uint32_t>(anchorChannel_);
-        const uint32_t lo = (std::min)(a, ch);
-        const uint32_t hi = (std::max)(a, ch);
+        // 기준점부터 여기까지 한 번에 켠다.
+        //
+        // 채널 번호가 아니라 **목록에 보이는 순서**를 따라야 한다. 그룹 순서를
+        // 바꾸거나 IO 를 다른 그룹으로 옮기면 화면 순서와 채널 번호가 어긋나는데,
+        // 번호로 고르면 눈에 보이는 것과 전혀 다른 묶음이 선택된다.
+        int a = -1, b = -1;
+        for (size_t i = 0; i < railRows_.size(); ++i) {
+            if (railRows_[i].kind != RailRow::Kind::Channel) continue;
+            if (railRows_[i].index == static_cast<uint32_t>(anchorChannel_)) a = static_cast<int>(i);
+            if (railRows_[i].index == ch) b = static_cast<int>(i);
+        }
+        if (a >= 0 && b >= 0) {
+            if (a > b) std::swap(a, b);
+            for (int i = a; i <= b; ++i) {
+                if (railRows_[static_cast<size_t>(i)].kind == RailRow::Kind::Channel) {
+                    selected_[railRows_[static_cast<size_t>(i)].index] = true;
+                }
+            }
+            return;
+        }
+        // 접힌 그룹에 있어서 목록에 없으면 번호 범위로 물러선다.
+        const uint32_t lo = (std::min)(static_cast<uint32_t>(anchorChannel_), ch);
+        const uint32_t hi = (std::max)(static_cast<uint32_t>(anchorChannel_), ch);
         for (uint32_t i = lo; i <= hi && i < selected_.size(); ++i) {
             if (ChannelVisibleInList(i)) selected_[i] = true;
         }
@@ -1713,48 +1744,53 @@ void App::RebuildTopButtons(float clientWidth) {
                  padY * 2.0f;
 }
 
-void App::RebuildRailButtons(const Rects& r) {
+void App::RebuildRailButtons(float railLeft, float railRight, float railTop) {
     const float pad = S(10.0f);
-    float ry = r.rail.top + S(6.0f) + S(16.0f) + S(metrics::kSearchH) + S(8.0f);
-    const float chipH = S(22.0f);
-    float rx = r.rail.left + pad;
-    auto addChip = [&](ButtonId id, const wchar_t* label, bool pressed) {
+    const float left = railLeft + pad;
+    const float right = railRight - pad;
+    const float rowH = S(22.0f);
+    const float gapY = S(4.0f);
+
+    float x = left;
+    float y = railTop + S(6.0f) + S(16.0f) + S(metrics::kSearchH) + S(8.0f);
+
+    // 자리가 모자라면 줄을 바꾼다. 버튼 하나가 통째로 폭보다 넓으면 잘라서
+    // 레일 밖으로 튀어나가지 않게 한다.
+    auto place = [&](float w) {
+        w = (std::min)(w, right - left);
+        if (x > left && x + w > right) {
+            x = left;
+            y += rowH + gapY;
+        }
+        const D2D1_RECT_F rc = Rect(x, y, x + w, y + rowH);
+        x += w + S(4.0f);
+        return rc;
+    };
+    auto add = [&](ButtonId id, const wchar_t* label, bool pressed) {
         Button b;
         b.id = id;
         b.label = label;
         b.pressed = pressed;
-        const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(16.0f);
-        // 레일도 넘치면 줄을 바꾼다.
-        if (rx > r.rail.left + pad && rx + w > r.rail.right - pad) {
-            rx = r.rail.left + pad;
-            ry += chipH + S(4.0f);
-        }
-        b.rect = Rect(rx, ry, rx + w, ry + chipH);
-        rx += w + S(5.0f);
+        b.rect = place(MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(16.0f));
         buttons_.push_back(std::move(b));
     };
-    addChip(ButtonId::FilterAll, L"전체", filter_ < 0);
-    addChip(ButtonId::FilterDigital, L"DIG", filter_ == LC_CH_DIGITAL);
-    addChip(ButtonId::FilterAnalog, L"ANA", filter_ == LC_CH_ANALOG);
-    addChip(ButtonId::FilterState, L"STATE", filter_ == LC_CH_STATE);
-    if (HasCompare()) addChip(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
 
-    const float sy = ry + chipH + S(6.0f);
-    float sx = r.rail.left + pad;
-    auto addLink = [&](ButtonId id, const wchar_t* label) {
-        Button b;
-        b.id = id;
-        b.label = label;
-        const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(12.0f);
-        b.rect = Rect(sx, sy, sx + w, sy + S(22.0f));
-        sx += w + S(4.0f);
-        buttons_.push_back(std::move(b));
-    };
-    addLink(ButtonId::SelectAll, L"전체 선택");
-    addLink(ButtonId::SelectNone, L"전체 해제");
-    addLink(ButtonId::GroupsExpand, L"펴기");
-    addLink(ButtonId::GroupsCollapse, L"접기");
-    addLink(ButtonId::AddToNewGroup, L"고른 IO로 새 그룹");
+    add(ButtonId::FilterAll, L"전체", filter_ < 0);
+    add(ButtonId::FilterDigital, L"DIG", filter_ == LC_CH_DIGITAL);
+    add(ButtonId::FilterAnalog, L"ANA", filter_ == LC_CH_ANALOG);
+    add(ButtonId::FilterState, L"STATE", filter_ == LC_CH_STATE);
+    if (HasCompare()) add(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
+
+    // 다음 묶음은 새 줄에서 시작한다
+    x = left;
+    y += rowH + S(6.0f);
+    add(ButtonId::SelectAll, L"전체 선택", false);
+    add(ButtonId::SelectNone, L"전체 해제", false);
+    add(ButtonId::GroupsExpand, L"펴기", false);
+    add(ButtonId::GroupsCollapse, L"접기", false);
+    add(ButtonId::AddToNewGroup, L"고른 IO로 새 그룹", false);
+
+    railHeaderH_ = (y + rowH + S(8.0f)) - railTop;
 }
 
 void App::Render() {
@@ -1762,9 +1798,11 @@ void App::Render() {
 
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    RebuildTopButtons(static_cast<float>(rc.right - rc.left));
+    const float clientW = static_cast<float>(rc.right - rc.left);
+    RebuildTopButtons(clientW);   // controlsH_ 가 정해진다
+    RebuildRailButtons(0.0f, RailWidth(clientW),
+                       S(metrics::kToolbarH) + controlsH_);   // railHeaderH_ 가 정해진다
     const Rects r = CalcRects();
-    RebuildRailButtons(r);
 
     rt_->BeginDraw();
     rt_->Clear(pal_.plane);
@@ -2932,7 +2970,14 @@ void App::OnLButtonDown(float x, float y, bool shift) {
                     caret_ = groups_[row.index].name.size();
                     caretTick_ = GetTickCount64();
                 } else {
-                    ToggleGroup(row.index);
+                    // 빈 자리를 누르면 끌어서 순서를 바꿀 수 있다. 접기/펴기는
+                    // 끌지 않고 뗐을 때만 한다.
+                    dragGroupRow_ = static_cast<int32_t>(row.index);
+                    railDownY_ = y;
+                    railDragging_ = false;
+                    dropGroup_ = -1;
+                    SetCapture(hwnd_);
+                    return;
                 }
             } else if (row.kind == RailRow::Kind::Channel) {
                 // 채널은 누른 자리를 기억만 하고, 손을 뗄 때 판정한다. 그래야 끌어서
@@ -2967,6 +3012,22 @@ void App::OnLButtonDown(float x, float y, bool shift) {
 }
 
 void App::OnLButtonUp(float x, float y, bool shift) {
+    if (dragGroupRow_ >= 0) {
+        const uint32_t from = static_cast<uint32_t>(dragGroupRow_);
+        const bool wasDragging = railDragging_;
+        const int32_t target = dropGroup_;
+        dragGroupRow_ = -1;
+        railDragging_ = false;
+        dropGroup_ = -1;
+        ReleaseCapture();
+        if (wasDragging && target >= 0) {
+            MoveGroup(from, static_cast<uint32_t>(target));
+        } else if (!wasDragging) {
+            ToggleGroup(from);
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
     if (dragChannel_ >= 0) {
         const uint32_t ch = static_cast<uint32_t>(dragChannel_);
         const bool wasDragging = railDragging_;
@@ -3018,7 +3079,7 @@ void App::OnMouseMove(float x, float y, bool /*dragging*/) {
     hoverY_ = y;
 
     // 목록에서 채널을 끌고 있는 중이면, 지금 어느 그룹 위에 있는지 계산한다.
-    if (dragChannel_ >= 0) {
+    if (dragChannel_ >= 0 || dragGroupRow_ >= 0) {
         if (!railDragging_ && std::fabs(y - railDownY_) > S(5.0f)) railDragging_ = true;
         if (railDragging_) {
             const Rects rr2 = CalcRects();

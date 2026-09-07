@@ -1,7 +1,7 @@
 # 18 · 그룹 이름·구성원 직접 정하기, 설정 저장
 
 - **날짜** 2026-09-07
-- **커밋** 이 커밋
+- **커밋** [`70d5f5f`](../../../commit/70d5f5f) Make groups user-defined and persist them
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `README.md`
 
 ## 요청

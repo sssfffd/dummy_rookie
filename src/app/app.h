@@ -171,7 +171,10 @@ private:
     // 버튼 배치는 두 단계다. 위쪽(툴바 + 컨트롤 줄)은 창 너비만 알면 되고,
     // 그 결과로 컨트롤 줄 높이가 정해져야 나머지 영역을 계산할 수 있다.
     void RebuildTopButtons(float clientWidth);
-    void RebuildRailButtons(const Rects& r);
+    // 레일 버튼도 줄바꿈한다. 그 결과로 목록이 시작하는 높이가 정해지므로,
+    // 영역을 계산하기 전에 먼저 배치해야 한다.
+    void RebuildRailButtons(float railLeft, float railRight, float railTop);
+    float RailWidth(float clientWidth) const;
     // 검색 상자는 직접 그린다. Win32 자식 컨트롤을 쓰면 Direct2D 가 매 프레임
     // 창 전체를 다시 올리면서 그 위를 덮어써서 계속 깜빡인다.
     D2D1_RECT_F SearchRect(const Rects& r) const;
@@ -265,6 +268,7 @@ private:
     void EnsureDefaultGroups();                 // 설정이 없으면 10개씩 묶어 만든다
     void AddSelectedToGroup(uint32_t group);    // 고른 IO 를 그 그룹으로 옮긴다
     void MoveChannelToGroup(uint32_t ch, uint32_t group);
+    void MoveGroup(uint32_t from, uint32_t to);
     void NewGroup();
     void DeleteGroup(uint32_t group);
     void GroupsChanged();                       // 다시 풀고 저장한다
@@ -372,6 +376,7 @@ private:
     // 고정되어, 시간축을 옮겨도 배율이 갑자기 바뀌지 않는다.
     bool yFitVisible_ = false;
     float controlsH_ = 34.0f;   // 줄바꿈 결과로 정해지는 컨트롤 줄 높이 (픽셀)
+    float railHeaderH_ = 120.0f;
 
     std::vector<RailRow> railRows_;
     std::vector<Group> groups_;
@@ -387,6 +392,7 @@ private:
     bool railDragging_ = false;
     bool dragOnCheckbox_ = false;
     int32_t dragChannel_ = -1;
+    int32_t dragGroupRow_ = -1;   // 그룹 머리를 끌어 순서를 바꾸는 중
     int32_t dropGroup_ = -1;
     float railDownY_ = 0.0f;
 
