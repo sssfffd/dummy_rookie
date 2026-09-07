@@ -1,7 +1,7 @@
 # 20 · 빠진 기능 점검, 한쪽에만 있는 IO 모아 보기
 
 - **날짜** 2026-09-07
-- **커밋** 이 커밋
+- **커밋** [`cc9e4c7`](../../../commit/cc9e4c7) Collect IOs that exist on only one side, and restore two lost behaviors
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `README.md`
 
 ## 요청

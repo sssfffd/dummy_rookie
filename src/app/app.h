@@ -42,7 +42,7 @@ enum class ButtonId {
     CompareBoth, CompareDiff,
     ZoomIn, ZoomOut, Fit, ClearCursors,
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState,
-    FilterChanged, FilterMissing,
+    FilterChanged, FilterMissing, FilterSelected,
     GroupsExpand, GroupsCollapse, NewGroup, AddToNewGroup,
     AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger,
     YFitVisible, CancelLoad, CompareColorCycle,
@@ -126,7 +126,9 @@ struct Group {
 // 왼쪽 목록의 한 줄. 그룹 머리, 채널, 그리고 "한쪽 로그에만 있는" 채널까지
 // 한 배열로 다뤄야 스크롤과 클릭 판정이 한곳에 모인다.
 struct RailRow {
-    enum class Kind : uint8_t { Group, Channel, MissingHeader, ExtraHeader, ExtraChannel };
+    enum class Kind : uint8_t {
+        Group, Channel, SelectedHeader, MissingHeader, ExtraHeader, ExtraChannel
+    };
     Kind kind = Kind::Channel;
     // Group: 그룹 번호 (groups_.size() 이면 "미분류"), Channel: 이전 로그 채널,
     // ExtraChannel: 이후 로그 채널
@@ -250,7 +252,9 @@ private:
     // 이전 로그에만 있는 채널 (이후 로그에서 이름이 사라진 것)
     std::vector<uint32_t> MissingChannels() const;
     // 검색창에 걸리는가. 이후 로그에만 있는 채널에도 같은 잣대를 쓴다.
-    bool MatchesQuery(const std::wstring& name) const;
+    // 포인터를 그대로 받는다 — 채널마다 std::wstring 을 새로 만들면 목록을 한 번
+    // 훑을 때마다 수백 번 메모리를 잡는다.
+    bool MatchesQuery(const wchar_t* name) const;
     // 지금 고른 척도로 잰 값과, 목록에 넣을 짧은 표시
     double MetricValue(uint32_t ch) const;
     std::wstring MetricBadge(uint32_t ch) const;
@@ -300,6 +304,17 @@ private:
     void OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& hi) const;
     // 채널 하나의 값을 세로 눈금 좌표로. 정규화가 켜져 있으면 0..1 로 접는다.
     double SeriesValue(uint32_t ch, double raw) const;
+
+    // ---- 빠르게 그리기 ----
+    // [a,b] 안의 표본 수. 픽셀보다 촘촘한지 가늠할 때 쓴다.
+    uint32_t CountInRange(const LcDataset* ds, double a, double b) const;
+    // 픽셀 열 하나에 표본이 여럿 들어가는가. 그렇다면 열 단위로 줄여 그린다.
+    bool Dense(const LcDataset* ds, double a, double b, float width) const;
+    // 열마다 최소·최대를 dlo_/dhi_ 에 뽑아 둔다. 그리는 비용이 파일 크기가 아니라
+    // 창 너비에 묶인다.
+    bool Decimate(const LcDataset* ds, uint32_t ch, double a, double b, uint32_t cols);
+    // 열 번호 -> 화면 x
+    static float ColumnX(float left, float width, uint32_t cols, uint32_t c);
 
     // ---- 좌표 ----
     // 모드에 따라 달라지는 플롯 가로 구간 (왼쪽 끝, 폭)
@@ -357,6 +372,11 @@ private:
     CompareMode compareMode_ = CompareMode::Both;
     CompareColor compareColor_ = CompareColor::BeforeAfter;
     std::vector<uint32_t> extraB_;     // 이후 로그에만 있는 채널
+    // 상태 번호는 로그마다 다르게 매겨진다. 이름으로 맞춘 표를 채널마다 한 번만
+    // 만들어 두면 표본마다 문자열을 만들어 견주지 않아도 된다.
+    std::vector<std::vector<int32_t>> stateMap_;
+    // 줄여 그리기 결과를 담아 두는 자리. 매 프레임 새로 잡지 않으려고 들고 있는다.
+    std::vector<double> dlo_, dhi_;
     double compareOffset_ = 0.0;       // 이후 로그 시간에 더할 보정값
     bool stagger_ = false;             // 겹칠 때 이후 선을 살짝 띄워 그린다
     std::wstring compareSummary_;

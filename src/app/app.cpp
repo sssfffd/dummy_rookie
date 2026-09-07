@@ -1,5 +1,7 @@
 #include "app.h"
 
+#include "walker.h"
+
 #include <shobjidl.h>
 #include <windowsx.h>
 #include <shellapi.h>
@@ -8,7 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <algorithm>
+#include <cwchar>
 #include <unordered_map>
 #include <limits>
 
@@ -526,8 +528,9 @@ bool App::ChannelDiffers(uint32_t ch) const {
     return ch < diffCount_.size() && diffCount_[ch] > 0;
 }
 
-bool App::MatchesQuery(const std::wstring& raw) const {
+bool App::MatchesQuery(const wchar_t* raw) const {
     if (query_.empty()) return true;
+    if (!raw) return false;
     std::wstring name = raw;
     std::wstring q = query_;
     std::transform(name.begin(), name.end(), name.begin(), ::towlower);
@@ -543,6 +546,8 @@ bool App::ChannelVisibleInList(uint32_t ch) const {
     }
     // "존재 차이" 는 이후 로그에서 이름이 사라진 채널만.
     if (filter_ == -3 && (ch < matchB_.size() && matchB_[ch] >= 0)) return false;
+    // "고른 것만" 은 지금 켜 둔 채널만.
+    if (filter_ == -4 && !(ch < selected_.size() && selected_[ch])) return false;
     if (filter_ >= 0 && static_cast<int>(lc_channel_type(ds_, ch)) != filter_) return false;
     return MatchesQuery(lc_channel_name(ds_, ch));
 }
@@ -588,7 +593,8 @@ void App::CloseCompare() {
     cmpLo_.clear(); cmpHi_.clear();
     diffLo_.clear(); diffHi_.clear();
     compareSummary_.clear();
-    if (filter_ <= -2) filter_ = -1;   // 비교 전용 필터는 비교를 닫으면 뜻이 없다
+    // 비교 전용 필터는 비교를 닫으면 뜻이 없다 ("고른 것만" 은 비교와 무관하다)
+    if (filter_ == -2 || filter_ == -3) filter_ = -1;
 }
 
 void App::CloseDataset() {
@@ -629,11 +635,13 @@ double App::DiffValueAt(uint32_t ch, double t) const {
     if (!std::isfinite(a) || !std::isfinite(b)) return nan;
 
     if (lc_channel_type(ds_, ch) == LC_CH_STATE) {
-        // 상태 값은 로그마다 번호가 다르게 매겨진다. 이름으로 비교해야 한다.
-        const std::wstring sa = lc_state_name(ds_, ch, static_cast<uint32_t>(a));
-        const std::wstring sb =
-            lc_state_name(dsB_, static_cast<uint32_t>(matchB_[ch]), static_cast<uint32_t>(b));
-        return (sa == sb) ? 0.0 : 1.0;
+        // 상태 값은 로그마다 번호가 다르게 매겨진다. 이름으로 맞춘 표를 미리
+        // 만들어 두었으므로 (RebuildComparison) 번호만 견주면 된다. 표본마다
+        // 문자열 두 개를 만들어 비교하던 자리다.
+        const uint32_t ai = static_cast<uint32_t>(a);
+        int32_t mapped = -1;
+        if (ch < stateMap_.size() && ai < stateMap_[ch].size()) mapped = stateMap_[ch][ai];
+        return (mapped >= 0 && mapped == static_cast<int32_t>(b)) ? 0.0 : 1.0;
     }
     return b - a;
 }
@@ -857,6 +865,7 @@ void App::RebuildComparison() {
     cmpHi_.assign(n, 1.0);
     diffLo_.assign(n, 0.0);
     diffHi_.assign(n, 1.0);
+    stateMap_.assign(n, {});
     if (!dsB_ || n == 0) return;
 
     const double* ta = lc_times(ds_);
@@ -887,13 +896,51 @@ void App::RebuildComparison() {
         bool prevDiffer = false;
         const double* av = lc_channel_values(ds_, ch);
 
+        // 상태 번호 표를 여기서 한 번만 만든다. 없으면 표본마다 상태 이름을
+        // 문자열로 만들어 견주게 되고, 그것이 로그를 여는 시간을 통째로 잡아먹었다.
+        const bool isState = lc_channel_type(ds_, ch) == LC_CH_STATE;
+        if (isState) {
+            const uint32_t sa = lc_state_count(ds_, ch);
+            const uint32_t sb = lc_state_count(dsB_, static_cast<uint32_t>(b));
+            stateMap_[ch].assign(sa, -1);
+            for (uint32_t x = 0; x < sa; ++x) {
+                const wchar_t* na = lc_state_name(ds_, ch, x);
+                for (uint32_t y = 0; y < sb; ++y) {
+                    if (na && std::wcscmp(na, lc_state_name(dsB_, static_cast<uint32_t>(b), y)) == 0) {
+                        stateMap_[ch][x] = static_cast<int32_t>(y);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 이후 로그를 커서로 훑는다. 시각이 커지기만 하므로 이진 탐색이 필요 없다.
+        Walker w;
+        w.t = lc_times(dsB_);
+        w.v = lc_channel_values(dsB_, static_cast<uint32_t>(b));
+        w.n = lc_sample_count(dsB_);
+        w.analog = lc_channel_type(dsB_, static_cast<uint32_t>(b)) == LC_CH_ANALOG;
+        const double toB = (w.n > 0) ? (w.t[0] - ta[0] + compareOffset_) : 0.0;
+
         for (uint32_t i = 0; i < samples; ++i) {
-            const double bv = CompareValueAt(ch, ta[i]);
+            const double bv = (w.n > 0) ? w.At(ta[i] + toB)
+                                        : std::numeric_limits<double>::quiet_NaN();
             if (std::isfinite(bv)) {
                 cmpLo_[ch] = (std::min)(cmpLo_[ch], bv);
                 cmpHi_[ch] = (std::max)(cmpHi_[ch], bv);
             }
-            const double d = DiffValueAt(ch, ta[i]);
+            const double a = av ? av[i] : std::numeric_limits<double>::quiet_NaN();
+            double d;
+            if (!std::isfinite(a) || !std::isfinite(bv)) {
+                d = std::numeric_limits<double>::quiet_NaN();
+            } else if (isState) {
+                const uint32_t ai = static_cast<uint32_t>(a);
+                const int32_t mapped =
+                    (ai < stateMap_[ch].size()) ? stateMap_[ch][ai] : static_cast<int32_t>(-1);
+                d = (mapped >= 0 && mapped == static_cast<int32_t>(bv)) ? 0.0 : 1.0;
+            } else {
+                d = bv - a;
+            }
             if (!std::isfinite(d)) { prevDiffer = false; continue; }
             dlo = (std::min)(dlo, d);
             dhi = (std::max)(dhi, d);
@@ -917,7 +964,6 @@ void App::RebuildComparison() {
                 st.peak = (std::max)(st.peak, ad);
             }
             prevDiffer = differ;
-            (void)av;
         }
 
         if (counted > 0) {
@@ -1208,6 +1254,19 @@ void App::RebuildRailRows() {
     if (!ds_) return;
     if (groupChannels_.size() != groups_.size() + 1) ResolveGroups();
 
+    // "고른 것만" 은 지금 켜 둔 IO 만 그리는 차례 그대로 늘어놓는다. 그래프에
+    // 무엇이 올라와 있는지 목록 하나로 붙잡아 두려는 것이다.
+    if (filter_ == -4) {
+        railRows_.push_back({RailRow::Kind::SelectedHeader, 0, 0});
+        for (uint32_t ch : SelectedInDisplayOrder()) {
+            if (MatchesQuery(lc_channel_name(ds_, ch))) {
+                railRows_.push_back(
+                    {RailRow::Kind::Channel, ch, static_cast<uint32_t>(groups_.size())});
+            }
+        }
+        return;
+    }
+
     // "존재 차이" 는 그룹을 무시하고, 한쪽에만 있는 IO 를 두 묶음으로 모아 보여
     // 준다. 흩어져 있으면 무엇이 없어지고 무엇이 새로 생겼는지 한눈에 안 들어온다.
     if (filter_ == -3 && HasCompare()) {
@@ -1423,11 +1482,39 @@ void App::DrawDifferenceBand(uint32_t ch, const D2D1_RECT_F& plot, float top, fl
 
     float lastA = 0.0f, lastB = 0.0f;
     bool open = false;
-    for (int i = i0; i <= i1; ++i) {
-        const double a = av[i];
-        const double b = CompareValueAt(ch, t[i]);
+
+    float spanL = 0.0f, spanW = 10.0f;
+    PlotSpan(plot, spanL, spanW);
+    const uint32_t cols = static_cast<uint32_t>((std::max)(spanW, 1.0f));
+
+    // 한 점씩 찍어 나가되, 촘촘하면 표본마다가 아니라 픽셀 열마다 한 번만 본다.
+    // 띠는 옅게 칠하는 면이라 열보다 잘게 나눠 봐야 화면에 남는 것이 없다.
+    const bool dense = Dense(ds_, t0_, t1_, spanW);
+    const uint32_t steps = dense ? cols : static_cast<uint32_t>(i1 - i0 + 1);
+    // 이후 로그는 시각이 커지는 쪽으로만 묻게 되므로 커서로 훑는다.
+    Walker w;
+    w.t = lc_times(dsB_);
+    w.v = lc_channel_values(dsB_, static_cast<uint32_t>(matchB_[ch]));
+    w.n = lc_sample_count(dsB_);
+    w.analog = lc_channel_type(dsB_, static_cast<uint32_t>(matchB_[ch])) == LC_CH_ANALOG;
+    const double toB = (w.n > 0) ? (w.t[0] - t[0] + compareOffset_) : 0.0;
+
+    for (uint32_t k = 0; k < steps; ++k) {
+        double tt;
+        double a;
+        if (dense) {
+            tt = t0_ + (static_cast<double>(k) + 0.5) * (t1_ - t0_) / cols;
+            const int ia = IndexAt(tt);
+            if (ia < 0) { flush(); open = false; continue; }
+            a = av[ia];
+        } else {
+            const int i = i0 + static_cast<int>(k);
+            tt = t[i];
+            a = av[i];
+        }
+        const double b = w.At(tt + toB);
         if (!std::isfinite(a) || !std::isfinite(b)) { flush(); open = false; continue; }
-        const float x = XOfTime(t[i], plot);
+        const float x = XOfTime(tt, plot);
         const float ya = yOf(a), yb = yOf(b);
         if (open && step) {
             fwd.push_back(D2D1::Point2F(x, lastA));
@@ -1449,7 +1536,7 @@ void App::DrawDifferenceBand(uint32_t ch, const D2D1_RECT_F& plot, float top, fl
 void App::DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
                         double lo, double hi, const D2D1_COLOR_F& color, bool diff,
                         float thickness) {
-    if (!dsB_ || !(hi > lo)) return;
+    if (!dsB_ || !(hi > lo) || ch >= matchB_.size() || matchB_[ch] < 0) return;
     const double* t = lc_times(ds_);
     if (!t) return;
     int i0 = 0, i1 = 0;
@@ -1460,20 +1547,92 @@ void App::DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float b
         return bottom - static_cast<float>((val - lo) / (hi - lo)) * (bottom - top);
     };
     const bool step = lc_channel_type(ds_, ch) != LC_CH_ANALOG;
+    const uint32_t chB = static_cast<uint32_t>(matchB_[ch]);
 
+    float spanL = 0.0f, spanW = 10.0f;
+    PlotSpan(plot, spanL, spanW);
+    const uint32_t cols = static_cast<uint32_t>((std::max)(spanW, 1.0f));
+
+    // 겹쳐 그리기: 이후 로그를 **그 로그의 표본 그대로** 그린다.
+    //
+    // 예전에는 이전 로그의 시각마다 이후 로그를 다시 뽑아(lc_sample_at) 그렸다.
+    // 표본마다 이진 탐색과 DLL 호출이 붙어 느렸을 뿐 아니라, 이후 로그의 표본이
+    // 더 촘촘하면 그 사이가 통째로 잘려 나가 실제보다 뭉툭하게 보였다.
+    if (!diff) {
+        const double* tb = lc_times(dsB_);
+        const double* vb = lc_channel_values(dsB_, chB);
+        const uint32_t nb = lc_sample_count(dsB_);
+        if (!tb || !vb || nb == 0) return;
+        // 화면 시각 -> 이후 로그 시각
+        const double toB = tb[0] - t[0] + compareOffset_;
+        const double b0 = t0_ + toB, b1 = t1_ + toB;
+
+        Path pc;
+        if (!pc.Begin(d2d_.get())) return;
+        bool started = false;
+        float last = 0.0f;
+        if (Dense(dsB_, b0, b1, spanW) && Decimate(dsB_, chB, b0, b1, cols)) {
+            for (uint32_t c = 0; c < cols; ++c) {
+                if (!std::isfinite(dlo_[c])) { started = false; continue; }
+                const float x = ColumnX(spanL, spanW, cols, c);
+                const float yTop = yOf(dhi_[c]);
+                const float yBot = yOf(dlo_[c]);
+                if (!started) { pc.Move(x, yBot); started = true; }
+                else { pc.Line(x, last); }
+                pc.Line(x, yTop);
+                pc.Line(x, yBot);
+                last = yBot;
+            }
+        } else {
+            const double* blo = std::lower_bound(tb, tb + nb, b0);
+            const double* bhi = std::lower_bound(tb, tb + nb, b1);
+            int j0 = (std::max)(0, static_cast<int>(blo - tb) - 1);
+            int j1 = (std::min)(static_cast<int>(nb) - 1, static_cast<int>(bhi - tb) + 1);
+            for (int j = j0; j <= j1; ++j) {
+                if (!std::isfinite(vb[j])) { started = false; continue; }
+                const float x = XOfTime(tb[j] - toB, plot);
+                const float y = yOf(vb[j]);
+                if (!started) { pc.Move(x, y); started = true; }
+                else if (step) { pc.Line(x, last); pc.Line(x, y); }
+                else { pc.Line(x, y); }
+                last = y;
+            }
+        }
+        if (!pc.End()) return;
+        brush_->SetColor(color);
+        rt_->DrawGeometry(pc.geo.get(), brush_.get(), thickness);
+        return;
+    }
+
+    // 차이 곡선은 이전 로그의 시간 격자 위에서만 뜻이 있다. 촘촘하면 표본마다가
+    // 아니라 픽셀 열마다 한 번씩만 값을 구한다.
     Path p;
     if (!p.Begin(d2d_.get())) return;
     bool pen = false;
     float lastY = 0.0f;
-    for (int i = i0; i <= i1; ++i) {
-        const double v = diff ? DiffValueAt(ch, t[i]) : CompareValueAt(ch, t[i]);
-        if (!std::isfinite(v)) { pen = false; continue; }
-        const float x = XOfTime(t[i], plot);
-        const float y = yOf(v);
-        if (!pen) { p.Move(x, y); pen = true; }
-        else if (step) { p.Line(x, lastY); p.Line(x, y); }
-        else { p.Line(x, y); }
-        lastY = y;
+    if (Dense(ds_, t0_, t1_, spanW)) {
+        for (uint32_t c = 0; c < cols; ++c) {
+            const double tt = t0_ + (static_cast<double>(c) + 0.5) * (t1_ - t0_) / cols;
+            const double v = DiffValueAt(ch, tt);
+            if (!std::isfinite(v)) { pen = false; continue; }
+            const float x = ColumnX(spanL, spanW, cols, c);
+            const float y = yOf(v);
+            if (!pen) { p.Move(x, y); pen = true; }
+            else if (step) { p.Line(x, lastY); p.Line(x, y); }
+            else { p.Line(x, y); }
+            lastY = y;
+        }
+    } else {
+        for (int i = i0; i <= i1; ++i) {
+            const double v = DiffValueAt(ch, t[i]);
+            if (!std::isfinite(v)) { pen = false; continue; }
+            const float x = XOfTime(t[i], plot);
+            const float y = yOf(v);
+            if (!pen) { p.Move(x, y); pen = true; }
+            else if (step) { p.Line(x, lastY); p.Line(x, y); }
+            else { p.Line(x, y); }
+            lastY = y;
+        }
     }
     if (!p.End()) return;
     brush_->SetColor(color);
@@ -1547,6 +1706,27 @@ int App::IndexAt(double t) const { return ds_ ? lc_index_at(ds_, t) : -1; }
 
 // 두 모드가 가로 여백이 다르다. 레인은 왼쪽에 이름, 오른쪽에 값 거터를 두고,
 // 겹쳐보기는 왼쪽에 세로 눈금만 둔다. 시간 <-> 화면 좌표 변환을 한곳에 모은다.
+uint32_t App::CountInRange(const LcDataset* ds, double a, double b) const {
+    if (!ds) return 0;
+    const uint32_t n = lc_sample_count(ds);
+    if (n == 0) return 0;
+    const double* t = lc_times(ds);
+    if (!t) return 0;
+    const double* lo = std::lower_bound(t, t + n, a);
+    const double* hi = std::lower_bound(t, t + n, b);
+    return static_cast<uint32_t>(hi - lo);
+}
+bool App::Dense(const LcDataset* ds, double a, double b, float width) const {
+    return static_cast<float>(CountInRange(ds, a, b)) > width * 2.0f;
+}
+bool App::Decimate(const LcDataset* ds, uint32_t ch, double a, double b, uint32_t cols) {
+    if (!ds || cols == 0) return false;
+    if (dlo_.size() < cols) { dlo_.resize(cols); dhi_.resize(cols); }
+    return lc_decimate(ds, ch, a, b, cols, dlo_.data(), dhi_.data()) == cols;
+}
+float App::ColumnX(float left, float width, uint32_t cols, uint32_t c) {
+    return left + (static_cast<float>(c) + 0.5f) * width / static_cast<float>(cols);
+}
 void App::PlotSpan(const D2D1_RECT_F& plot, float& left, float& width) const {
     if (mode_ == PlotMode::Overlay) {
         left = plot.left + S(metrics::kOverlayAxisW);
@@ -1832,6 +2012,7 @@ void App::RebuildRailButtons(float railLeft, float railRight, float railTop) {
     add(ButtonId::FilterDigital, L"DIG", filter_ == LC_CH_DIGITAL);
     add(ButtonId::FilterAnalog, L"ANA", filter_ == LC_CH_ANALOG);
     add(ButtonId::FilterState, L"STATE", filter_ == LC_CH_STATE);
+    add(ButtonId::FilterSelected, L"고른 것만", filter_ == -4);
     if (HasCompare()) {
         add(ButtonId::FilterChanged, L"달라진 것만", filter_ == -2);
         add(ButtonId::FilterMissing, L"존재 차이", filter_ == -3);
@@ -2060,6 +2241,28 @@ void App::DrawRail(const Rects& r) {
             DrawLabel(Fmt(L"%u/%u", selected, visible), fSmallRight_.get(),
                       Rect(r.rail.right - S(50.0f), top, r.rail.right - S(10.0f), top + rowH),
                       dropHere ? pal_.onAccent : (selected ? pal_.accent : pal_.ink3));
+            continue;
+        }
+
+        // "고른 것만" 머리. 상자를 누르면 통째로 끈다.
+        if (row.kind == RailRow::Kind::SelectedHeader) {
+            uint32_t sel = 0;
+            for (bool b2 : selected_) sel += b2 ? 1u : 0u;
+            Fill(Rect(r.rail.left, top, r.rail.right, top + rowH), pal_.hover);
+            const D2D1_RECT_F cb = Rect(r.rail.left + S(12.0f), top + (rowH - box) * 0.5f,
+                                        r.rail.left + S(12.0f) + box, top + (rowH + box) * 0.5f);
+            const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cb, S(3.0f), S(3.0f));
+            if (sel > 0) {
+                brush_->SetColor(pal_.accent);
+                rt_->FillRoundedRectangle(crr, brush_.get());
+            } else {
+                brush_->SetColor(pal_.hair);
+                rt_->DrawRoundedRectangle(crr, brush_.get(), 1.0f);
+            }
+            DrawLabel(Fmt(L"지금 고른 IO  (%u)  — 그래프에 그려지는 차례", sel),
+                      fSmall_.get(),
+                      Rect(cb.right + S(9.0f), top, r.rail.right - S(10.0f), top + rowH),
+                      sel ? pal_.accent : pal_.ink3);
             continue;
         }
 
@@ -2356,6 +2559,47 @@ void App::DrawLaneDigital(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot
     const float hi = lane.top + pad, lo = lane.bottom - pad;
     const float rightX = plot.right - S(metrics::kValueGutter);
 
+    float spanL = 0.0f, spanW = 10.0f;
+    PlotSpan(plot, spanL, spanW);
+
+    // 표본이 픽셀보다 촘촘하면 열마다 0/1 이 들어 있는지만 뽑아 그린다. 한 픽셀
+    // 안에서 수천 번 오르내리는 구간은 어차피 눈으로 셀 수 없고, 좁은 펄스도
+    // 열이 통째로 세로로 서기 때문에 사라지지 않는다.
+    const uint32_t cols = static_cast<uint32_t>((std::max)(spanW, 1.0f));
+    if (Dense(ds_, t0_, t1_, spanW) && Decimate(ds_, ch, t0_, t1_, cols)) {
+        brush_->SetColor(D2D1::ColorF(pal_.accent.r, pal_.accent.g, pal_.accent.b, 0.14f));
+        int runFrom = -1;
+        for (uint32_t c = 0; c <= cols; ++c) {
+            const bool on = c < cols && std::isfinite(dhi_[c]) && dhi_[c] != 0.0;
+            if (on && runFrom < 0) runFrom = static_cast<int>(c);
+            if (!on && runFrom >= 0) {
+                const float xa = ColumnX(spanL, spanW, cols, static_cast<uint32_t>(runFrom));
+                const float xb = ColumnX(spanL, spanW, cols, c);
+                rt_->FillRectangle(Rect(xa, hi, (std::max)(xb, xa + 0.7f), lo), brush_.get());
+                runFrom = -1;
+            }
+        }
+        Path pd;
+        if (!pd.Begin(d2d_.get())) return;
+        bool started2 = false;
+        float last = lo;
+        for (uint32_t c = 0; c < cols; ++c) {
+            if (!std::isfinite(dlo_[c])) { started2 = false; continue; }
+            const float x = ColumnX(spanL, spanW, cols, c);
+            const float yTop = (dhi_[c] != 0.0) ? hi : lo;   // 열 안의 최대
+            const float yBot = (dlo_[c] != 0.0) ? hi : lo;   // 열 안의 최소
+            if (!started2) { pd.Move(x, yBot); started2 = true; }
+            else { pd.Line(x, last); }
+            pd.Line(x, yTop);
+            pd.Line(x, yBot);
+            last = yBot;
+        }
+        if (!pd.End()) return;
+        brush_->SetColor(pal_.accent);
+        rt_->DrawGeometry(pd.geo.get(), brush_.get(), S(2.0f));
+        return;
+    }
+
     // 하이 구간 채움
     brush_->SetColor(D2D1::ColorF(pal_.accent.r, pal_.accent.g, pal_.accent.b, 0.14f));
     int runStart = -1;
@@ -2408,19 +2652,18 @@ void App::DrawLaneAnalog(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot)
         return bot - static_cast<float>((val - mn) / (mx - mn)) * (bot - top);
     };
 
-    const int count = i1 - i0 + 1;
-    // 샘플이 픽셀보다 촘촘하면 코어의 다운샘플러로 픽셀당 최소/최대만 뽑는다.
-    if (static_cast<float>(count) > width * 2.0f) {
-        const uint32_t cols = static_cast<uint32_t>(width);
-        std::vector<double> lo(cols), hi(cols);
-        lc_decimate(ds_, ch, t0_, t1_, cols, lo.data(), hi.data());
+    // 표본이 픽셀보다 촘촘하면 코어의 다운샘플러로 열마다 최소/최대만 뽑는다.
+    // 담을 자리는 App 이 들고 있는 것을 다시 쓴다 — 레인마다 프레임마다 새로
+    // 잡으면 그만큼이 그대로 느려짐이 된다.
+    const uint32_t cols = static_cast<uint32_t>((std::max)(width, 1.0f));
+    if (Dense(ds_, t0_, t1_, width) && Decimate(ds_, ch, t0_, t1_, cols)) {
         Path p;
         if (!p.Begin(d2d_.get())) return;
         for (uint32_t c = 0; c < cols; ++c) {
-            if (!std::isfinite(lo[c])) continue;
-            const float x = leftX + static_cast<float>(c) + 0.5f;
-            p.Move(x, yOf(hi[c]));
-            p.Line(x, yOf(lo[c]) + 0.8f);
+            if (!std::isfinite(dlo_[c])) continue;
+            const float x = ColumnX(leftX, width, cols, c);
+            p.Move(x, yOf(dhi_[c]));
+            p.Line(x, yOf(dlo_[c]) + 0.8f);
         }
         if (!p.End()) return;
         brush_->SetColor(pal_.accent);
@@ -2453,6 +2696,44 @@ void App::DrawLaneState(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot) 
     const float pad = S(7.0f);
     const float top = lane.top + pad, bot = lane.bottom - pad;
     const float rightX = plot.right - S(metrics::kValueGutter);
+
+    float spanL = 0.0f, spanW = 10.0f;
+    PlotSpan(plot, spanL, spanW);
+
+    // 촘촘하면 열마다 상태가 하나인지 여럿인지만 본다. 여럿이 섞인 열은 회색으로
+    // 둔다 — 한 픽셀 안에 여러 상태가 들어 있다는 사실 자체가 읽어야 할 정보다.
+    const uint32_t cols = static_cast<uint32_t>((std::max)(spanW, 1.0f));
+    if (Dense(ds_, t0_, t1_, spanW) && Decimate(ds_, ch, t0_, t1_, cols)) {
+        uint32_t c = 0;
+        while (c < cols) {
+            if (!std::isfinite(dlo_[c])) { ++c; continue; }
+            const bool mixed = dlo_[c] != dhi_[c];
+            const double val = dlo_[c];
+            uint32_t e = c + 1;
+            while (e < cols && std::isfinite(dlo_[e]) && dlo_[e] == val &&
+                   (dlo_[e] != dhi_[e]) == mixed) {
+                ++e;
+            }
+            const float xa = ColumnX(spanL, spanW, cols, c);
+            const float xb = ColumnX(spanL, spanW, cols, e);
+            const uint32_t si = static_cast<uint32_t>(val);
+            const D2D1_COLOR_F base = mixed ? pal_.ink3 : ((si < 8) ? pal_.series[si] : pal_.ink3);
+            brush_->SetColor(D2D1::ColorF(base.r, base.g, base.b, mixed ? 0.45f : 0.82f));
+            rt_->FillRectangle(Rect(xa, top, (std::max)(xb - S(2.0f), xa + 0.7f), bot),
+                               brush_.get());
+            if (!mixed) {
+                const std::wstring label =
+                    si < lc_state_count(ds_, ch) ? lc_state_name(ds_, ch, si) : L"";
+                const float w = MeasureText(dw_.get(), label, fSmall_.get());
+                if (!label.empty() && xb - xa > w + S(14.0f)) {
+                    DrawLabel(label, fSmall_.get(), Rect(xa + S(6.0f), top, xb - S(4.0f), bot),
+                              D2D1::ColorF(D2D1::ColorF::White));
+                }
+            }
+            c = e;
+        }
+        return;
+    }
 
     int start = i0;
     double cur = v[i0];
@@ -2582,6 +2863,34 @@ void App::DrawSeries(uint32_t ch, const D2D1_RECT_F& plot, float top, float bott
     // 디지털과 상태 채널은 값이 순간적으로 바뀌므로 계단으로 그린다. 비스듬한
     // 선으로 이으면 없는 중간 값이 있는 것처럼 보인다.
     const bool step = lc_channel_type(ds_, ch) != LC_CH_ANALOG;
+
+    float spanL = 0.0f, spanW = 10.0f;
+    PlotSpan(plot, spanL, spanW);
+    const uint32_t cols = static_cast<uint32_t>((std::max)(spanW, 1.0f));
+
+    // 한 픽셀에 표본이 여럿이면 열마다 최소·최대만 세로로 잇는다. 화면에 보이는
+    // 모양은 그대로면서 찍는 점의 수가 창 너비에 묶인다.
+    if (Dense(ds_, t0_, t1_, spanW) && Decimate(ds_, ch, t0_, t1_, cols)) {
+        Path pc;
+        if (!pc.Begin(d2d_.get())) return;
+        bool started = false;
+        float last = 0.0f;
+        for (uint32_t c = 0; c < cols; ++c) {
+            if (!std::isfinite(dlo_[c])) { started = false; continue; }
+            const float x = ColumnX(spanL, spanW, cols, c);
+            const float yTop = yOf(dhi_[c]);
+            const float yBot = yOf(dlo_[c]);
+            if (!started) { pc.Move(x, yBot); started = true; }
+            else { pc.Line(x, last); }
+            pc.Line(x, yTop);
+            pc.Line(x, yBot);
+            last = yBot;
+        }
+        if (!pc.End()) return;
+        brush_->SetColor(color);
+        rt_->DrawGeometry(pc.geo.get(), brush_.get(), S(2.0f));
+        return;
+    }
 
     Path p;
     if (!p.Begin(d2d_.get())) return;
@@ -2968,6 +3277,7 @@ void App::OnButton(ButtonId id) {
         case ButtonId::FilterState:   filter_ = LC_CH_STATE; scrollRail_ = 0.0f; break;
         case ButtonId::FilterChanged: filter_ = -2; scrollRail_ = 0.0f; break;
         case ButtonId::FilterMissing: filter_ = -3; scrollRail_ = 0.0f; break;
+        case ButtonId::FilterSelected: filter_ = -4; scrollRail_ = 0.0f; break;
         default: break;
     }
     // 척도를 바꾸면 값은 이미 계산돼 있으므로 다시 훑을 필요가 없지만, 요약
@@ -3069,6 +3379,9 @@ void App::OnLButtonDown(float x, float y, bool shift) {
                     SetCapture(hwnd_);
                     return;
                 }
+            } else if (row.kind == RailRow::Kind::SelectedHeader) {
+                for (size_t k = 0; k < selected_.size(); ++k) selected_[k] = false;
+                scrollPlot_ = 0.0f;
             } else if (row.kind == RailRow::Kind::MissingHeader) {
                 const std::vector<uint32_t> miss = MissingChannels();
                 uint32_t sel = 0;

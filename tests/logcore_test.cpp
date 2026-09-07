@@ -16,6 +16,7 @@
 
 #include "dataset.h"
 #include "text_util.h"
+#include "../src/app/walker.h"
 
 namespace {
 
@@ -461,6 +462,43 @@ void TestSampleAt() {
     CHECK(std::isnan(lc::sample_at(ds, 99, 1.0)));
 }
 
+// 그리기와 비교 통계는 이제 lc::sample_at 대신 app::Walker 로 훑는다. 두 값이
+// 언제나 같아야 파형과 차이량이 예전과 똑같이 나온다.
+void TestWalkerMatchesSampleAt() {
+    std::printf("커서로 훑기가 sample_at 과 같은 값을 주는가\n");
+    const lc::Dataset ds = MakeSmall(L"DI_00", L"AI_TEMP");
+
+    for (uint32_t ch = 0; ch < 2; ++ch) {
+        app::Walker w;
+        w.t = ds.times.data();
+        w.v = ds.channels[ch].values.data();
+        w.n = static_cast<uint32_t>(ds.times.size());
+        w.analog = ds.channels[ch].type == LC_CH_ANALOG;
+
+        // 시각이 커지는 쪽으로만 묻는다 — 실제로 쓰는 방식 그대로.
+        for (int k = -5; k <= 105; ++k) {
+            const double t = static_cast<double>(k) * 0.02;
+            const double a = lc::sample_at(ds, ch, t);
+            const double b = w.At(t);
+            CHECK((std::isnan(a) && std::isnan(b)) || a == b);
+        }
+    }
+
+    // 뒤로 되돌아가 물어도 (창을 왼쪽으로 끌 때) 같은 값이어야 한다.
+    app::Walker back;
+    back.t = ds.times.data();
+    back.v = ds.channels[1].values.data();
+    back.n = static_cast<uint32_t>(ds.times.size());
+    back.analog = true;
+    CHECK(std::fabs(back.At(1.8) - lc::sample_at(ds, 1, 1.8)) < 1e-12);
+    CHECK(std::fabs(back.At(0.2) - lc::sample_at(ds, 1, 0.2)) < 1e-12);
+    CHECK(std::fabs(back.At(1.0) - lc::sample_at(ds, 1, 1.0)) < 1e-12);
+
+    // 표본이 하나도 없거나 포인터가 비면 지어내지 않는다.
+    app::Walker empty;
+    CHECK(std::isnan(empty.At(0.0)));
+}
+
 void TestCompareTwoLogs() {
     std::printf("이전/이후 로그 비교\n");
     // 이후 로그는 표본 시각이 어긋나 있고(0.5 간격), 시간 원점도 다르다.
@@ -558,6 +596,7 @@ int main() {
     TestNameFolding();
     TestFindChannel();
     TestSampleAt();
+    TestWalkerMatchesSampleAt();
     TestCompareTwoLogs();
     TestUnlimited();
 
