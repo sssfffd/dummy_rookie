@@ -396,9 +396,12 @@ LcStatus parse_sheet(IStream* s, const Limits& lim, const SheetContext& cx, Grid
 
 LcStatus read_xlsx(IStream* stream, const Limits& lim, Grid& out) {
     Package pkg;
+    // OPC Packaging API 는 Windows 7 부터 들어 있다. 그보다 낮은 Windows 나
+    // 구성 요소가 빠진 시스템에서는 여기서 실패하므로, .xlsx 는 못 읽지만 CSV 는
+    // 그대로 읽을 수 있다는 뜻이 되도록 "지원하지 않는 형식" 으로 돌려준다.
     HRESULT hr = CoCreateInstance(__uuidof(OpcFactory), nullptr, CLSCTX_INPROC_SERVER,
                                   __uuidof(IOpcFactory), pkg.factory.put_void());
-    if (FAILED(hr)) return LC_ERR_INTERNAL;
+    if (FAILED(hr)) return LC_ERR_UNSUPPORTED;
 
     // OPC_CACHE_ON_ACCESS: 파트를 미리 전부 펼치지 않고 접근할 때 읽는다.
     // OPC_VALIDATE_ON_LOAD 를 켜면 패키지 전체를 먼저 검증하므로 큰 파일에서

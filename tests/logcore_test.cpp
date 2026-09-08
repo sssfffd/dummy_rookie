@@ -464,6 +464,147 @@ void TestSampleAt() {
 
 // 그리기와 비교 통계는 이제 lc::sample_at 대신 app::Walker 로 훑는다. 두 값이
 // 언제나 같아야 파형과 차이량이 예전과 똑같이 나온다.
+// 값이 오랫동안 0 인 채널이 그대로 남는가.
+//
+// "0 으로 몇 분 지속되는 데이터가 반영되지 않는다" 는 신고를 받고 만든 시험이다.
+// 상수 구간은 시간축 후보로도 뽑힐 수 있고(값이 줄지 않으므로), 빈 칸으로 오해받아
+// 통째로 잘려 나갈 수도 있는 자리라 모양을 여러 가지로 두고 확인한다.
+void TestLongZeroRunSurvives() {
+    std::printf("오래 0 인 채널\n");
+
+    // 열이 IO 인 배치. 한 채널이 앞부분 내내 0 이다가 뒤에서 1 로 바뀐다.
+    {
+        lc::Grid g;
+        g.push_back({Txt(L"Time [s]"), Txt(L"DI_VALVE"), Txt(L"AI_TEMP")});
+        for (int i = 0; i < 40; ++i) {
+            g.push_back({Num(i * 1.0), Num(i < 30 ? 0.0 : 1.0), Num(100.0 + i)});
+        }
+        lc::Dataset ds;
+        lc::Limits lim;
+        CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+        CHECK(ds.channels.size() == 2);
+        CHECK(ds.times.size() == 40);
+        CHECK(ds.channels[0].name == L"DI_VALVE");
+        CHECK(ds.channels[0].values[0] == 0.0);
+        CHECK(ds.channels[0].values[29] == 0.0);
+        CHECK(ds.channels[0].values[30] == 1.0);
+        // 0 이 이어지는 동안에도 표본이 하나도 빠지지 않아야 한다
+        for (int i = 0; i < 30; ++i) CHECK(ds.channels[0].values[(size_t)i] == 0.0);
+    }
+
+    // 처음부터 끝까지 0 인 채널도 채널로 남아야 한다 (값이 없는 것과 다르다).
+    {
+        lc::Grid g;
+        g.push_back({Txt(L"Time [s]"), Txt(L"DI_IDLE"), Txt(L"AI_TEMP")});
+        for (int i = 0; i < 20; ++i) g.push_back({Num(i * 1.0), Num(0.0), Num(7.0)});
+        lc::Dataset ds;
+        lc::Limits lim;
+        CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+        CHECK(ds.channels.size() == 2);
+        CHECK(ds.channels[0].name == L"DI_IDLE");
+        CHECK(ds.channels[0].min == 0.0 && ds.channels[0].max == 0.0);
+    }
+
+    // 행이 IO 인 배치에서도 같아야 한다.
+    {
+        lc::Grid g;
+        lc::Row t, a, b;
+        t.push_back(Txt(L"Time [s]"));
+        a.push_back(Txt(L"DI_IDLE"));
+        b.push_back(Txt(L"AI_TEMP"));
+        for (int i = 0; i < 40; ++i) {
+            t.push_back(Num(i * 1.0));
+            a.push_back(Num(i < 30 ? 0.0 : 1.0));
+            b.push_back(Num(100.0 + i));
+        }
+        g.push_back(t);
+        g.push_back(a);
+        g.push_back(b);
+        lc::Dataset ds;
+        lc::Limits lim;
+        CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+        CHECK(ds.channels.size() == 2);
+        CHECK(ds.channels[0].name == L"DI_IDLE");
+        CHECK(ds.channels[0].values[29] == 0.0);
+        CHECK(ds.channels[0].values[30] == 1.0);
+    }
+}
+
+// 같은 시각이 여러 표본에 걸쳐 반복될 때.
+//
+// 시간 칸이 비어 직전 값으로 채워졌거나, 기록 주기가 시간 표기의 해상도보다 빠르면
+// 여러 표본이 같은 시각을 갖는다. 그대로 두면 화면에서 한 점에 겹쳐 몇 분에 걸친
+// 구간이 통째로 보이지 않게 된다.
+void TestRepeatedTimestampsAreSpread() {
+    std::printf("같은 시각이 반복되는 시간축\n");
+
+    // 분 단위 표기에 5개씩 기록된 경우
+    {
+        lc::Grid g;
+        g.push_back({Txt(L"Time"), Txt(L"DI_VALVE"), Txt(L"AI_TEMP")});
+        const wchar_t* ts[] = {L"10:00", L"10:01", L"10:02", L"10:03"};
+        for (int m = 0; m < 4; ++m) {
+            for (int k = 0; k < 5; ++k) {
+                g.push_back({Txt(ts[m]), Num(0.0), Num(100.0 + m)});
+            }
+        }
+        lc::Dataset ds;
+        lc::Limits lim;
+        CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+        CHECK(ds.times.size() == 20);
+        // 모두 서로 달라야 한다 — 겹치면 화면에서 사라진다
+        bool strictly_increasing = true;
+        for (size_t i = 1; i < ds.times.size(); ++i) {
+            if (!(ds.times[i] > ds.times[i - 1])) strictly_increasing = false;
+        }
+        CHECK(strictly_increasing);
+        // "10:00" 은 10분 0초로 읽힌다 (분:초). 원래 적혀 있던 시각은 그 자리에
+        // 그대로 남고, 사이만 고르게 나뉜다.
+        CHECK(ds.times[0] == 600000.0);
+        CHECK(ds.times[5] == 601000.0);
+        CHECK(ds.times[10] == 602000.0);
+        CHECK(std::fabs(ds.times[1] - 600200.0) < 1e-6);
+    }
+
+    // 시간 칸이 값이 바뀔 때만 적혀 있고 중간은 비어 있는 경우.
+    // 빈 칸에서 시간축 후보가 끊기면 진짜 시간 열이 길이 1 로 전락해, 엉뚱한
+    // 데이터 열이 시간축으로 뽑힌다.
+    {
+        lc::Grid g;
+        g.push_back({Txt(L"Time [s]"), Txt(L"AI_TEMP"), Txt(L"DI_RUN")});
+        const double wave[6] = {5.0, 7.0, 6.0, 9.0, 4.0, 8.0};
+        for (int i = 0; i < 12; ++i) {
+            // 3개마다 한 번만 시각이 적혀 있다
+            g.push_back({(i % 3 == 0) ? Num(i * 1.0) : None(), Num(wave[i % 6]),
+                         Num((i % 4 == 0) ? 1.0 : 0.0)});
+        }
+        lc::Dataset ds;
+        lc::Limits lim;
+        CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+        CHECK(ds.times.size() == 12);
+        CHECK(ds.channels.size() == 2);   // 시간 열이 채널로 둔갑하지 않았다
+        bool strictly_increasing = true;
+        for (size_t i = 1; i < ds.times.size(); ++i) {
+            if (!(ds.times[i] > ds.times[i - 1])) strictly_increasing = false;
+        }
+        CHECK(strictly_increasing);
+    }
+
+    // 시각이 전부 같으면 가로 폭이 0 이 된다. 샘플 번호로 물러서야 한다.
+    {
+        lc::Grid g;
+        g.push_back({Txt(L"Time [s]"), Txt(L"DI"), Txt(L"AI")});
+        for (int i = 0; i < 10; ++i) g.push_back({Num(0.0), Num(0.0), Num(5.0)});
+        lc::Dataset ds;
+        lc::Limits lim;
+        CHECK(lc::build_dataset(g, LC_ORIENT_AUTO, lim, ds) == LC_OK);
+        CHECK(ds.time_kind == LC_TIME_INDEX);
+        CHECK(ds.times.size() == 10);
+        CHECK(ds.times[0] == 0.0);
+        CHECK(ds.times[9] == 9.0);
+    }
+}
+
 void TestWalkerMatchesSampleAt() {
     std::printf("커서로 훑기가 sample_at 과 같은 값을 주는가\n");
     const lc::Dataset ds = MakeSmall(L"DI_00", L"AI_TEMP");
@@ -596,6 +737,8 @@ int main() {
     TestNameFolding();
     TestFindChannel();
     TestSampleAt();
+    TestLongZeroRunSurvives();
+    TestRepeatedTimestampsAreSpread();
     TestWalkerMatchesSampleAt();
     TestCompareTwoLogs();
     TestUnlimited();

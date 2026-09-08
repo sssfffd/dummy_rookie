@@ -3,6 +3,12 @@
 #include "version.h"
 #include "walker.h"
 
+// Windows 8.1 에서 생긴 메시지. API 수준을 7 로 맞춰 두었으므로 헤더가 선언하지
+// 않는다. 값은 고정이고, 이 메시지를 보내지 않는 Windows 에서는 그냥 오지 않는다.
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
 #include <shobjidl.h>
 #include <windowsx.h>
 #include <shellapi.h>

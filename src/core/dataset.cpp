@@ -111,6 +111,53 @@ LcTimeKind parse_time_axis(const Row& header, size_t n, std::vector<double>& tim
             return fall_back(L"시간 값이 증가하지 않아 샘플 번호를 시간축으로 사용합니다.");
         }
     }
+
+    // 처음과 끝이 같으면 (여기까지 왔으니 줄지는 않았고) 시간축 전체가 한 점이다.
+    // 그대로 두면 그래프의 가로 폭이 0 이 되어 아무것도 그려지지 않는다.
+    if (n >= 2 && !(times[n - 1] > times[0])) {
+        return fall_back(L"시간 값이 모두 같아 샘플 번호를 시간축으로 사용합니다.");
+    }
+
+    // 같은 시각이 여러 표본에 걸쳐 반복되면 그 표본들은 화면에서 한 점에 겹친다.
+    //
+    // 실제 로그에서 흔한 두 가지 때문에 그렇게 된다.
+    //   · 시간 칸이 비어 있어 바로 위에서 직전 값을 그대로 채운 경우
+    //   · 기록 주기가 시간 표기의 해상도보다 빠른 경우 (분 단위 표기에 초 단위 기록)
+    // 그러면 몇 분에 걸친 구간이 세로줄 하나로 뭉개져 **아예 보이지 않는다.**
+    // 다음 서로 다른 시각까지의 사이를 고르게 나눠 편다. 순서는 그대로 지켜지고,
+    // 서로 다른 시각으로 적힌 표본의 자리는 건드리지 않는다.
+    size_t spread = 0;
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i + 1;
+        while (j < n && times[j] == times[i]) ++j;
+        const size_t len = j - i;
+        if (len > 1) {
+            double next = 0.0;
+            if (j < n) {
+                next = times[j];
+            } else {
+                // 마지막 묶음은 뒤가 없으므로 바로 앞의 간격을 이어 쓴다.
+                const double step = (i > 0) ? (times[i] - times[i - 1]) : 1.0;
+                next = times[i] + ((step > 0.0) ? step : 1.0);
+            }
+            const double span = next - times[i];
+            if (span > 0.0) {
+                const double base = times[i];
+                for (size_t k = 1; k < len; ++k) {
+                    times[i + k] = base + span * static_cast<double>(k) /
+                                              static_cast<double>(len);
+                }
+                spread += len - 1;
+            }
+        }
+        i = j;
+    }
+    if (spread > 0) {
+        ds.add_note(L"같은 시각이 적힌 표본 " + to_wstr(spread) +
+                    L"개를 다음 시각까지 고르게 펴서 배치했습니다 "
+                    L"(그대로 두면 한 점에 겹쳐 보이지 않습니다).");
+    }
     return best;
 }
 
@@ -205,8 +252,10 @@ Run longest_time_run(size_t count, Fn at) {
             continue;
         }
         if (!ok) {
-            if (run_len > best.length) { best.start = run_start; best.length = run_len; }
-            run_len = 0;
+            // 빈 칸은 구간을 끊지 않는다. 시간 칸을 값이 바뀔 때만 적는 로그가
+            // 흔하고(중간은 비워 둔다), 그때 빈 칸에서 끊어 버리면 진짜 시간축이
+            // 길이 1짜리 후보로 전락해 엉뚱한 데이터 열이 시간축으로 뽑힌다.
+            // 길이에는 더하지 않으므로, 거의 비어 있는 줄이 이길 일도 없다.
             continue;
         }
         if (run_len == 0) run_start = i;

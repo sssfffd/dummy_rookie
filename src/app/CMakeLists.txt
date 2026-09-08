@@ -32,7 +32,7 @@ configure_file(
 target_include_directories(logscope PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_link_libraries(logscope PRIVATE logcore logscope_hardening)
+target_link_libraries(logscope PRIVATE logcore logscope_hardening logscope_platform)
 
 # 여기도 전부 Windows 구성요소다.
 #   d2d1/dwrite : 렌더링

@@ -16,7 +16,7 @@ target_include_directories(logcore
 
 # LOGCORE_BUILD 는 dllexport 를, 소비자 쪽에서는 dllimport 를 켠다.
 target_compile_definitions(logcore PRIVATE LOGCORE_BUILD)
-target_link_libraries(logcore PRIVATE logscope_hardening)
+target_link_libraries(logcore PRIVATE logscope_hardening logscope_platform)
 if(MSVC)
   target_link_options(logcore PRIVATE ${LOGSCOPE_DEPLOAD_DLL})
 endif()

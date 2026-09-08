@@ -2,7 +2,7 @@
 
 - **판** 0.01
 - **날짜** 2026-09-08
-- **커밋** 이 커밋
+- **커밋** [`4b572a7`](../../../commit/4b572a7) Zoom the value axis, add a change-only scale, fix the overlay's mismatched axis
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `CMakeLists.txt`, `README.md`
 
 ## 요청
