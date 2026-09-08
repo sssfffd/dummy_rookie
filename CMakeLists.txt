@@ -1,7 +1,10 @@
 # 3.18 = check_linker_flag 가 들어온 버전. CMakePresets 를 쓰려면 3.21 이상이
 # 필요하지만, 프리셋 없이 -G 로 직접 구성하는 경로는 3.18 에서도 동작한다.
 cmake_minimum_required(VERSION 3.18)
-project(LogScope VERSION 1.0.0 LANGUAGES CXX)
+# 판 번호는 여기 한 곳에서만 나온다. **파일을 고칠 때마다 0.01 씩 올린다.**
+# 화면(설정 창)과 version.h 가 모두 이 값을 그대로 쓴다.
+set(LOGSCOPE_VERSION "0.00")
+project(LogScope LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
 # LogScope — 엑셀/CSV 로그를 IO 채널 파형으로 그리는 Windows 데스크톱 앱.
@@ -124,4 +127,4 @@ if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
 
-message(STATUS "LogScope ${PROJECT_VERSION} — 산출물: ${CMAKE_BINARY_DIR}/bin/<Config>/ (logscope.exe + logcore.dll)")
+message(STATUS "LogScope ${LOGSCOPE_VERSION} — 산출물: ${CMAKE_BINARY_DIR}/bin/<Config>/ (logscope.exe + logcore.dll)")

@@ -1,7 +1,7 @@
 # 22 · 설정 창, 판 번호 표시, 로그 세트 여섯 벌
 
 - **날짜** 2026-09-08
-- **커밋** 이 커밋
+- **커밋** [`098c40a`](../../../commit/098c40a) Add a settings window with the version, and six before/after log sets
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `src/app/version.h.in`(새로 만듦),
   `src/app/CMakeLists.txt`, `README.md`
 

@@ -1,10 +1,10 @@
 // version.h — 빌드할 때 CMake 가 채워 넣는다. 손으로 고치지 않는다.
 //
-// 판 번호는 CMakeLists.txt 의 project(LogScope VERSION ...) 한 곳에서만 나온다.
+// 판 번호는 CMakeLists.txt 의 LOGSCOPE_VERSION 한 곳에서만 나온다.
 // 커밋 해시를 같이 두는 것은, 같은 1.0.0 이라도 어제 준 빌드와 오늘 준 빌드를
 // 화면 하나로 가려내기 위해서다.
 #pragma once
 
-#define LOGSCOPE_VERSION L"@PROJECT_VERSION@"
+#define LOGSCOPE_VERSION L"@LOGSCOPE_VERSION@"
 #define LOGSCOPE_COMMIT  L"@LOGSCOPE_GIT_HASH@"
 #define LOGSCOPE_BUILT   L"@LOGSCOPE_BUILD_DATE@"

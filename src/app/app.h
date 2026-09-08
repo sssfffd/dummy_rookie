@@ -251,7 +251,6 @@ private:
     void DrawSettings();
     bool SettingsClick(float x, float y);
     std::wstring VersionText() const;
-    std::wstring ExePath() const;
 
     // ---- 로그 세트 ----
     LogSet& ActiveSet() { return sets_[activeSet_]; }

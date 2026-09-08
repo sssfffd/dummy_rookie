@@ -32,7 +32,8 @@
 | [19](19-group-order-shift-range-buttons.md) | 2026-09-07 | 그룹 순서 바꾸기, Shift 범위가 화면 순서를 따르도록, 버튼 튀어나옴 | `06867e9` |
 | [20](20-existence-diff-and-audit.md) | 2026-09-07 | 빠진 기능 점검, 한쪽에만 있는 IO 모아 보기 | `cc9e4c7` |
 | [21](21-selected-list-and-speed.md) | 2026-09-07 | 고른 IO 만 보는 목록, 그리기·비교 속도 | `a0b80e7` |
-| [22](22-settings-window-and-six-sets.md) | 2026-09-08 | 설정 창, 판 번호 표시, 로그 세트 여섯 벌 | (이 커밋) |
+| [22](22-settings-window-and-six-sets.md) | 2026-09-08 | 설정 창, 판 번호 표시, 로그 세트 여섯 벌 | `098c40a` |
+| [23](23-version-numbering-and-labels.md) | 2026-09-08 | 판 0.00 시작, 설정 창 정리, 그룹 버튼에 이름 | (이 커밋) |
 
 ## 규칙
 

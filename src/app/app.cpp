@@ -1128,17 +1128,6 @@ void App::EnsureDefaultGroups() {
 
 // ---- 설정 창 --------------------------------------------------------------
 
-// nullptr 이면 실행 파일 자신, 이름을 주면 그 이름으로 실제 불러온 모듈.
-static std::wstring ModulePath(const wchar_t* name) {
-    HMODULE m = name ? GetModuleHandleW(name) : nullptr;
-    if (name && !m) return std::wstring();
-    wchar_t buf[MAX_PATH] = {0};
-    const DWORD n = GetModuleFileNameW(m, buf, MAX_PATH);
-    return (n > 0 && n < MAX_PATH) ? std::wstring(buf) : std::wstring();
-}
-
-std::wstring App::ExePath() const { return ModulePath(nullptr); }
-
 std::wstring App::VersionText() const {
     std::wstring v = std::wstring(L"IO Log Scope  ") + LOGSCOPE_VERSION;
     const std::wstring commit = LOGSCOPE_COMMIT;
@@ -1241,22 +1230,19 @@ void App::DrawSettings() {
               pal_.ink);
 
     // ---- 판 번호 --------------------------------------------------------
-    // 어느 빌드를 쓰고 있는지 화면 하나로 답할 수 있어야 한다. 실제로 불러온
-    // 파일의 경로까지 적는 것은, exe 와 dll 이 다른 판으로 섞이는 일이 실제로
-    // 생기기 때문이다.
+    // 어느 빌드를 쓰고 있는지 화면 하나로 답할 수 있어야 한다.
     DrawLabel(VersionText(), fUi_.get(),
               Rect(left, box.top + S(42.0f), right, box.top + S(64.0f)), pal_.ink);
-    const wchar_t* labels[] = {L"빌드", L"실행 파일", L"logcore.dll", L"설정 파일"};
-    const std::wstring values[] = {LOGSCOPE_BUILT, ExePath(), ModulePath(L"logcore.dll"),
-                                   SettingsConfigPath()};
-    for (int i = 0; i < 4; ++i) {
-        const float ly = box.top + S(64.0f) + static_cast<float>(i) * S(15.0f);
+    const wchar_t* labels[] = {L"빌드", L"설정 파일"};
+    const std::wstring values[] = {LOGSCOPE_BUILT, SettingsConfigPath()};
+    for (int i = 0; i < 2; ++i) {
+        const float ly = box.top + S(64.0f) + static_cast<float>(i) * S(16.0f);
         DrawLabel(labels[i], fSmall_.get(),
-                  Rect(left, ly, left + S(84.0f), ly + S(15.0f)), pal_.ink3);
+                  Rect(left, ly, left + S(84.0f), ly + S(16.0f)), pal_.ink3);
         DrawLabel(Ellipsize(dw_.get(),
                             values[i].empty() ? std::wstring(L"—") : values[i], fSmall_.get(),
                             right - left - S(90.0f)),
-                  fSmall_.get(), Rect(left + S(90.0f), ly, right, ly + S(15.0f)), pal_.ink3);
+                  fSmall_.get(), Rect(left + S(90.0f), ly, right, ly + S(16.0f)), pal_.ink3);
     }
 
     StrokeLine(left, Px(box.top + S(128.0f)), right, Px(box.top + S(128.0f)), pal_.hair);
@@ -2683,7 +2669,7 @@ void App::DrawRail(const Rects& r) {
             const bool editingThis = editTarget_ == EditTarget::GroupName &&
                                      editGroup_ == row.index && isUser;
             const float nameL = cb.right + S(9.0f);
-            const float nameR = r.rail.right - (isUser ? S(96.0f) : S(56.0f));
+            const float nameR = r.rail.right - (isUser ? S(120.0f) : S(56.0f));
             if (editingThis) {
                 const D2D1_RECT_F eb = Rect(nameL - S(4.0f), top + S(2.0f), nameR,
                                             top + rowH - S(2.0f));
@@ -2708,14 +2694,18 @@ void App::DrawRail(const Rects& r) {
                           dropHere ? pal_.onAccent : pal_.ink);
             }
 
-            // 오른쪽: 고른 IO 담기(+), 그룹 지우기(×), 개수
+            // 오른쪽: 고른 IO 담기, 그룹 지우기, 개수.
+            //
+            // 예전에는 ＋ 와 × 였는데, 무엇을 담고 무엇을 지우는지 기호만으로는
+            // 알 수 없다는 지적을 받았다. 글자로 적는다 — 화살표 버튼에 이름을
+            // 붙였던 것과 같은 이유다.
             if (isUser && !editingThis) {
-                DrawLabel(L"＋", fUiCenter_.get(),
-                          Rect(r.rail.right - S(94.0f), top, r.rail.right - S(72.0f),
+                DrawLabel(L"담기", fUiCenter_.get(),
+                          Rect(r.rail.right - S(116.0f), top, r.rail.right - S(84.0f),
                                top + rowH),
                           dropHere ? pal_.onAccent : pal_.accent);
-                DrawLabel(L"×", fUiCenter_.get(),
-                          Rect(r.rail.right - S(72.0f), top, r.rail.right - S(52.0f),
+                DrawLabel(L"삭제", fUiCenter_.get(),
+                          Rect(r.rail.right - S(84.0f), top, r.rail.right - S(52.0f),
                                top + rowH),
                           dropHere ? pal_.onAccent : pal_.ink3);
             }
@@ -3887,13 +3877,13 @@ void App::OnLButtonDown(float x, float y, bool shift) {
                     uint32_t visible = 0, selected = 0;
                     GroupCounts(row.index, visible, selected);
                     SetGroupSelected(row.index, selected < visible);
-                } else if (isUser && x >= r.rail.right - S(94.0f) &&
-                           x < r.rail.right - S(72.0f)) {
-                    AddSelectedToGroup(row.index);        // ＋ 고른 IO 담기
-                } else if (isUser && x >= r.rail.right - S(72.0f) &&
+                } else if (isUser && x >= r.rail.right - S(116.0f) &&
+                           x < r.rail.right - S(84.0f)) {
+                    AddSelectedToGroup(row.index);        // "담기" 고른 IO 를 이 그룹으로
+                } else if (isUser && x >= r.rail.right - S(84.0f) &&
                            x < r.rail.right - S(52.0f)) {
-                    DeleteGroup(row.index);               // × 그룹 지우기
-                } else if (isUser && x > boxR + S(6.0f) && x < r.rail.right - S(94.0f)) {
+                    DeleteGroup(row.index);               // "삭제" 그룹 지우기
+                } else if (isUser && x > boxR + S(6.0f) && x < r.rail.right - S(116.0f)) {
                     // 이름을 누르면 고친다. 두 번 누를 필요 없이 바로 편집 상태로.
                     editTarget_ = EditTarget::GroupName;
                     editGroup_ = row.index;
