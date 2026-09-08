@@ -1,5 +1,6 @@
 #include "app.h"
 
+#include "version.h"
 #include "walker.h"
 
 #include <shobjidl.h>
@@ -180,7 +181,8 @@ bool App::Create(HINSTANCE inst, int show, const wchar_t* initialPath,
     if (!RegisterClassExW(&wc)) return false;
 
     ApplySystemTheme();
-    LoadGroups();   // 지난번에 만들어 둔 그룹 설정
+    LoadSettings();  // 세트 여섯 벌과 기본 폴더
+    LoadGroups();    // 지난번에 만들어 둔 그룹 설정
 
     hwnd_ = CreateWindowExW(WS_EX_ACCEPTFILES, kWindowClass, L"IO Log Scope",
                             WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -346,6 +348,9 @@ std::wstring* App::ActiveText() {
     if (editTarget_ == EditTarget::GroupName && editGroup_ < groups_.size()) {
         return &groups_[editGroup_].name;
     }
+    if (editTarget_ == EditTarget::SetName && editSet_ < sets_.size()) {
+        return &sets_[editSet_].name;
+    }
     return nullptr;
 }
 
@@ -355,8 +360,16 @@ const std::wstring* App::ActiveText() const {
 
 void App::EndEditing() {
     const bool wasGroup = editTarget_ == EditTarget::GroupName;
+    const bool wasSet = editTarget_ == EditTarget::SetName;
     editTarget_ = EditTarget::None;
     caret_ = 0;
+    // 세트 이름도 비워 두면 무엇인지 알 수 없다. 번호로 되돌린다.
+    if (wasSet && editSet_ < sets_.size()) {
+        if (trim_ws(sets_[editSet_].name).empty()) {
+            sets_[editSet_].name = Fmt(L"%u번", editSet_ + 1);
+        }
+        SaveSettings();
+    }
     // 이름을 비워 두면 목록에서 그룹을 찾을 수 없다. 빈 이름은 되돌린다.
     if (wasGroup && editGroup_ < groups_.size() && trim_ws(groups_[editGroup_].name).empty()) {
         groups_[editGroup_].name = Fmt(L"그룹 %u", editGroup_ + 1);
@@ -733,6 +746,7 @@ void App::FinishLoad(const std::shared_ptr<LoadJob>& job) {
         fileNameB_ = name;
         lastPathB_ = keep;
         RebuildComparison();
+        RememberOpenPaths();
     } else {
         CloseCompare();
         CloseDataset();
@@ -754,6 +768,7 @@ void App::FinishLoad(const std::shared_ptr<LoadJob>& job) {
         if (!message_.empty()) message_ += L" ";
         message_ += Fmt(L"채널 %u개를 읽었습니다. 왼쪽에서 볼 IO 를 고르세요.", n);
         messageIsError_ = false;
+        RememberOpenPaths();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
     start_queued();
@@ -822,16 +837,51 @@ void App::OpenCompareDialog() {
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
-    const std::wstring path = PickLogFile(L"비교할 이후 로그 열기");
+    const std::wstring path =
+        PickLogFile(L"비교할 이후 로그 열기", ActiveSet().afterDir);
     if (!path.empty()) LoadComparePath(path);
 }
 
 void App::OpenFileDialog() {
-    const std::wstring path = PickLogFile(L"로그 파일 열기 (이전 로그)");
+    const std::wstring path =
+        PickLogFile(L"로그 파일 열기 (이전 로그)", ActiveSet().beforeDir);
     if (!path.empty()) LoadPath(path);
 }
 
-std::wstring App::PickLogFile(const wchar_t* title) {
+// 대화상자를 그 폴더에서 열리게 한다. 경로가 없거나 사라졌으면 아무 일도 하지
+// 않는다 — 그러면 Windows 가 기억하는 마지막 폴더가 그대로 쓰인다.
+static void SetStartFolder(IFileDialog* dlg, const std::wstring& start) {
+    if (!dlg || start.empty()) return;
+    Ptr<IShellItem> item;
+    if (SUCCEEDED(SHCreateItemFromParsingName(start.c_str(), nullptr,
+                                              IID_PPV_ARGS(item.put())))) {
+        dlg->SetFolder(item.get());
+    }
+}
+
+std::wstring App::PickFolder(const wchar_t* title, const std::wstring& start) {
+    Ptr<IFileOpenDialog> dlg;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(dlg.put())))) {
+        return std::wstring();
+    }
+    DWORD flags = 0;
+    dlg->GetOptions(&flags);
+    dlg->SetOptions(flags | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST);
+    dlg->SetTitle(title);
+    SetStartFolder(dlg.get(), start);
+    if (FAILED(dlg->Show(hwnd_))) return std::wstring();
+
+    Ptr<IShellItem> item;
+    if (FAILED(dlg->GetResult(item.put()))) return std::wstring();
+    PWSTR raw = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw) return std::wstring();
+    std::wstring path = raw;
+    CoTaskMemFree(raw);
+    return path;
+}
+
+std::wstring App::PickLogFile(const wchar_t* title, const std::wstring& start) {
     Ptr<IFileOpenDialog> dlg;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(dlg.put())))) {
@@ -845,6 +895,7 @@ std::wstring App::PickLogFile(const wchar_t* title) {
     };
     dlg->SetFileTypes(ARRAYSIZE(filters), filters);
     dlg->SetTitle(title);
+    SetStartFolder(dlg.get(), start);
     if (FAILED(dlg->Show(hwnd_))) return std::wstring();
 
     Ptr<IShellItem> item;
@@ -1073,6 +1124,385 @@ void App::EnsureDefaultGroups() {
         for (uint32_t ch = first; ch < last; ++ch) g.members.push_back(lc_channel_name(ds_, ch));
         groups_.push_back(std::move(g));
     }
+}
+
+// ---- 설정 창 --------------------------------------------------------------
+
+// nullptr 이면 실행 파일 자신, 이름을 주면 그 이름으로 실제 불러온 모듈.
+static std::wstring ModulePath(const wchar_t* name) {
+    HMODULE m = name ? GetModuleHandleW(name) : nullptr;
+    if (name && !m) return std::wstring();
+    wchar_t buf[MAX_PATH] = {0};
+    const DWORD n = GetModuleFileNameW(m, buf, MAX_PATH);
+    return (n > 0 && n < MAX_PATH) ? std::wstring(buf) : std::wstring();
+}
+
+std::wstring App::ExePath() const { return ModulePath(nullptr); }
+
+std::wstring App::VersionText() const {
+    std::wstring v = std::wstring(L"IO Log Scope  ") + LOGSCOPE_VERSION;
+    const std::wstring commit = LOGSCOPE_COMMIT;
+    if (!commit.empty() && commit != L"unknown") v += L"  (" + commit + L")";
+    return v;
+}
+
+D2D1_RECT_F App::SettingsRect() const {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    const float w = static_cast<float>(rc.right - rc.left);
+    const float h = static_cast<float>(rc.bottom - rc.top);
+    const float pw = (std::min)(S(760.0f), w - S(40.0f));
+    const float ph = (std::min)(S(456.0f), h - S(40.0f));
+    const float cx = w * 0.5f, cy = h * 0.5f;
+    return Rect(cx - pw * 0.5f, cy - ph * 0.5f, cx + pw * 0.5f, cy + ph * 0.5f);
+}
+
+// 설정 창 안의 버튼. 세트마다 같은 종류가 여섯 벌이므로 arg 에 세트 번호를 싣는다.
+void App::RebuildSettingsButtons() {
+    settingsButtons_.clear();
+    if (!settingsOpen_) return;
+
+    const D2D1_RECT_F box = SettingsRect();
+    const float pad = S(16.0f);
+    const float rowH = S(26.0f);
+
+    // 폴더 경로는 길다. 버튼 너비에 맞춰 미리 줄여 둔다 — 그리는 쪽은 글자를
+    // 잘라 주지 않으므로 여기서 하지 않으면 버튼 밖으로 넘친다.
+    auto add = [&](ButtonId id, int32_t arg, const std::wstring& label, D2D1_RECT_F rc,
+                   bool pressed) {
+        Button b;
+        b.id = id;
+        b.arg = arg;
+        b.label = Ellipsize(dw_.get(), label, fUiCenter_.get(),
+                            (rc.right - rc.left) - S(12.0f));
+        b.pressed = pressed;
+        b.rect = rc;
+        settingsButtons_.push_back(std::move(b));
+    };
+
+    // 닫기 (오른쪽 위)
+    add(ButtonId::CloseSettings, -1, L"닫기",
+        Rect(box.right - pad - S(56.0f), box.top + S(12.0f), box.right - pad,
+             box.top + S(12.0f) + rowH),
+        false);
+
+    // 세트 여섯 줄
+    const float listTop = box.top + S(152.0f);
+    const float numW = S(54.0f);
+    const float nameW = S(120.0f);
+    const float clearW = S(44.0f);
+    const float gap = S(6.0f);
+    const float dirW =
+        (std::max)((box.right - pad - clearW - gap) -
+                       (box.left + pad + numW + gap + nameW + gap) - gap,
+                   S(120.0f)) * 0.5f;
+
+    for (uint32_t i = 0; i < sets_.size(); ++i) {
+        const float y = listTop + static_cast<float>(i) * (rowH + S(6.0f));
+        float x = box.left + pad;
+        add(ButtonId::SelectSet, static_cast<int32_t>(i), Fmt(L"%u번", i + 1),
+            Rect(x, y, x + numW, y + rowH), i == activeSet_);
+        x += numW + gap + nameW + gap;   // 이름 칸은 버튼이 아니라 글자 입력 자리
+        add(ButtonId::SetDirBefore, static_cast<int32_t>(i),
+            sets_[i].beforeDir.empty() ? L"이전 폴더: 지정 안 함"
+                                       : L"이전 폴더: " + sets_[i].beforeDir,
+            Rect(x, y, x + dirW, y + rowH), false);
+        x += dirW + gap;
+        add(ButtonId::SetDirAfter, static_cast<int32_t>(i),
+            sets_[i].afterDir.empty() ? L"이후 폴더: 지정 안 함"
+                                      : L"이후 폴더: " + sets_[i].afterDir,
+            Rect(x, y, x + dirW, y + rowH), false);
+        x += dirW + gap;
+        add(ButtonId::SetForget, static_cast<int32_t>(i), L"비우기",
+            Rect(x, y, x + clearW, y + rowH), false);
+    }
+}
+
+void App::DrawSettings() {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    const D2D1_RECT_F all = Rect(0, 0, static_cast<float>(rc.right),
+                                 static_cast<float>(rc.bottom));
+    // 뒤를 어둡게 덮어 지금 눌러야 할 곳이 어디인지 분명히 한다.
+    Fill(all, D2D1::ColorF(0, 0, 0, 0.38f));
+
+    const D2D1_RECT_F box = SettingsRect();
+    const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(box, S(8.0f), S(8.0f));
+    brush_->SetColor(pal_.panel);
+    rt_->FillRoundedRectangle(rr, brush_.get());
+    brush_->SetColor(pal_.hair);
+    rt_->DrawRoundedRectangle(rr, brush_.get(), 1.0f);
+
+    const float pad = S(16.0f);
+    const float left = box.left + pad;
+    const float right = box.right - pad;
+
+    DrawLabel(L"설정", fTitle_.get(), Rect(left, box.top + S(10.0f), right, box.top + S(40.0f)),
+              pal_.ink);
+
+    // ---- 판 번호 --------------------------------------------------------
+    // 어느 빌드를 쓰고 있는지 화면 하나로 답할 수 있어야 한다. 실제로 불러온
+    // 파일의 경로까지 적는 것은, exe 와 dll 이 다른 판으로 섞이는 일이 실제로
+    // 생기기 때문이다.
+    DrawLabel(VersionText(), fUi_.get(),
+              Rect(left, box.top + S(42.0f), right, box.top + S(64.0f)), pal_.ink);
+    const wchar_t* labels[] = {L"빌드", L"실행 파일", L"logcore.dll", L"설정 파일"};
+    const std::wstring values[] = {LOGSCOPE_BUILT, ExePath(), ModulePath(L"logcore.dll"),
+                                   SettingsConfigPath()};
+    for (int i = 0; i < 4; ++i) {
+        const float ly = box.top + S(64.0f) + static_cast<float>(i) * S(15.0f);
+        DrawLabel(labels[i], fSmall_.get(),
+                  Rect(left, ly, left + S(84.0f), ly + S(15.0f)), pal_.ink3);
+        DrawLabel(Ellipsize(dw_.get(),
+                            values[i].empty() ? std::wstring(L"—") : values[i], fSmall_.get(),
+                            right - left - S(90.0f)),
+                  fSmall_.get(), Rect(left + S(90.0f), ly, right, ly + S(15.0f)), pal_.ink3);
+    }
+
+    StrokeLine(left, Px(box.top + S(128.0f)), right, Px(box.top + S(128.0f)), pal_.hair);
+    DrawLabel(L"로그 세트 — 번호를 누르면 그 세트의 비교 화면으로 갑니다. "
+              L"폴더는 파일 열기 대화상자가 처음 열릴 자리입니다.",
+              fSmall_.get(), Rect(left, box.top + S(130.0f), right, box.top + S(148.0f)),
+              pal_.ink3);
+
+    // ---- 세트 줄 --------------------------------------------------------
+    for (size_t i = 0; i < settingsButtons_.size(); ++i) {
+        DrawButton(settingsButtons_[i], hotSettingsBtn_ == static_cast<int32_t>(i));
+    }
+
+    const float rowH = S(26.0f);
+    const float listTop = box.top + S(152.0f);
+    const float nameL = left + S(54.0f) + S(6.0f);
+    const float nameW = S(120.0f);
+    for (uint32_t i = 0; i < sets_.size(); ++i) {
+        const float y = listTop + static_cast<float>(i) * (rowH + S(6.0f));
+        const D2D1_RECT_F eb = Rect(nameL, y, nameL + nameW, y + rowH);
+        const bool editing = editTarget_ == EditTarget::SetName && editSet_ == i;
+        brush_->SetColor(pal_.surface);
+        rt_->FillRoundedRectangle(D2D1::RoundedRect(eb, S(4.0f), S(4.0f)), brush_.get());
+        brush_->SetColor(editing ? pal_.accent : pal_.hair);
+        rt_->DrawRoundedRectangle(D2D1::RoundedRect(eb, S(4.0f), S(4.0f)), brush_.get(),
+                                  editing ? S(1.6f) : 1.0f);
+        DrawLabel(Ellipsize(dw_.get(), sets_[i].name, fMono_.get(), nameW - S(12.0f)),
+                  fMono_.get(), Rect(eb.left + S(6.0f), y, eb.right - S(4.0f), y + rowH),
+                  pal_.ink);
+        if (editing && ((GetTickCount64() - caretTick_) / 530) % 2 == 0) {
+            const std::wstring upto =
+                sets_[i].name.substr(0, (std::min)(caret_, sets_[i].name.size()));
+            const float cx = eb.left + S(6.0f) + MeasureText(dw_.get(), upto, fMono_.get());
+            StrokeLine(Px(cx), y + S(5.0f), Px(cx), y + rowH - S(5.0f), pal_.ink, S(1.4f));
+        }
+    }
+
+    // ---- 아래 도움말 ----------------------------------------------------
+    const float footY = box.bottom - S(30.0f);
+    DrawLabel(L"세트를 바꾸면 그 세트의 로그를 다시 읽습니다. "
+              L"여섯 벌을 한꺼번에 메모리에 올려 두지 않습니다.",
+              fSmall_.get(), Rect(left, footY, right, box.bottom - S(8.0f)), pal_.ink3);
+}
+
+// 설정 창이 열려 있는 동안의 클릭. 처리했으면 true.
+bool App::SettingsClick(float x, float y) {
+    if (!settingsOpen_) return false;
+    const D2D1_RECT_F box = SettingsRect();
+
+    for (const Button& b : settingsButtons_) {
+        if (Inside(b.rect, x, y)) {
+            OnButton(b.id, b.arg);
+            return true;
+        }
+    }
+
+    // 이름 칸을 누르면 그 자리에서 고친다.
+    const float rowH = S(26.0f);
+    const float listTop = box.top + S(152.0f);
+    const float nameL = box.left + S(16.0f) + S(54.0f) + S(6.0f);
+    const float nameR = nameL + S(120.0f);
+    if (x >= nameL && x <= nameR) {
+        for (uint32_t i = 0; i < sets_.size(); ++i) {
+            const float ry = listTop + static_cast<float>(i) * (rowH + S(6.0f));
+            if (y >= ry && y < ry + rowH) {
+                editTarget_ = EditTarget::SetName;
+                editSet_ = i;
+                caret_ = sets_[i].name.size();
+                caretTick_ = GetTickCount64();
+                UpdateImePosition();
+                return true;
+            }
+        }
+    }
+
+    if (Inside(box, x, y)) {
+        // 창 안의 빈 자리. 글자 고치기만 끝낸다.
+        if (editTarget_ != EditTarget::None) EndEditing();
+        return true;
+    }
+
+    // 바깥을 누르면 닫는다.
+    if (editTarget_ != EditTarget::None) EndEditing();
+    settingsOpen_ = false;
+    return true;
+}
+
+// ---- 로그 세트 ------------------------------------------------------------
+
+std::wstring App::SetTitle(uint32_t set) const {
+    if (set < sets_.size() && !sets_[set].name.empty()) return sets_[set].name;
+    return Fmt(L"%u번", set + 1);
+}
+
+void App::RememberOpenPaths() {
+    if (activeSet_ >= sets_.size()) return;
+    LogSet& s = sets_[activeSet_];
+    s.beforePath = lastPath_;
+    s.afterPath = lastPathB_;
+    SaveSettings();
+}
+
+void App::SwitchSet(uint32_t set) {
+    if (set >= sets_.size() || set == activeSet_) return;
+    if (IsLoading()) {
+        // 읽는 중에 바꾸면 방금 시작한 읽기가 어느 세트 것인지 알 수 없게 된다.
+        message_ = L"로그를 읽는 중입니다. 끝난 뒤에 세트를 바꾸세요 (또는 읽기 취소).";
+        messageIsError_ = true;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    RememberOpenPaths();
+    activeSet_ = set;
+    SaveSettings();
+
+    CloseCompare();
+    CloseDataset();
+    fileName_.clear();
+    fileNameB_.clear();
+    lastPath_.clear();
+    lastPathB_.clear();
+    loadQueue_.clear();
+    query_.clear();
+    filter_ = -1;
+    EndEditing();
+
+    const LogSet& t = sets_[set];
+    if (!t.beforePath.empty()) {
+        // 이전 로그를 먼저 읽고, 끝나면 이후 로그가 대기열에서 이어진다.
+        BeginLoad(t.beforePath, 0);
+        if (!t.afterPath.empty()) loadQueue_.emplace_back(t.afterPath, 1);
+        message_ = Fmt(L"세트 %u — %s 을(를) 다시 읽습니다.", set + 1,
+                       SetTitle(set).c_str());
+        messageIsError_ = false;
+    } else {
+        message_ = Fmt(L"세트 %u — %s. 아직 연 로그가 없습니다.", set + 1,
+                       SetTitle(set).c_str());
+        messageIsError_ = false;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+// ---- 설정 파일 ------------------------------------------------------------
+
+std::wstring App::SettingsConfigPath() const {
+    wchar_t base[MAX_PATH] = {0};
+    const DWORD len = GetEnvironmentVariableW(L"APPDATA", base, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return std::wstring();
+    std::wstring dir = std::wstring(base) + L"\\LogScope";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\settings.txt";
+}
+
+void App::LoadSettings() {
+    sets_.assign(kSetCount, LogSet{});
+    for (uint32_t i = 0; i < kSetCount; ++i) sets_[i].name = Fmt(L"%u번", i + 1);
+    activeSet_ = 0;
+
+    const std::wstring path = SettingsConfigPath();
+    if (path.empty()) return;
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    std::string raw;
+    char buf[4096];
+    DWORD got = 0;
+    while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0) raw.append(buf, got);
+    CloseHandle(h);
+    if (raw.size() >= 3 && static_cast<unsigned char>(raw[0]) == 0xEF) raw.erase(0, 3);
+
+    const int need = MultiByteToWideChar(CP_UTF8, 0, raw.data(), static_cast<int>(raw.size()),
+                                         nullptr, 0);
+    if (need <= 0) return;
+    std::wstring text(static_cast<size_t>(need), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, raw.data(), static_cast<int>(raw.size()), &text[0], need);
+
+    int cur = -1;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        const size_t nl = text.find(L'\n', pos);
+        std::wstring line = text.substr(pos, (nl == std::wstring::npos) ? nl : nl - pos);
+        pos = (nl == std::wstring::npos) ? text.size() + 1 : nl + 1;
+        while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
+        if (line.empty() || line[0] == L'#') continue;
+
+        const size_t tab = line.find(L'\t');
+        const std::wstring key = line.substr(0, tab);
+        const std::wstring val = (tab == std::wstring::npos) ? std::wstring()
+                                                             : line.substr(tab + 1);
+        if (key == L"set") {
+            // "set<TAB>번호<TAB>이름"
+            const size_t tab2 = val.find(L'\t');
+            const int no = _wtoi(val.substr(0, tab2).c_str());
+            cur = (no >= 1 && no <= static_cast<int>(kSetCount)) ? (no - 1) : -1;
+            if (cur >= 0 && tab2 != std::wstring::npos) {
+                const std::wstring nm = trim_ws(val.substr(tab2 + 1));
+                if (!nm.empty()) sets_[static_cast<size_t>(cur)].name = nm;
+            }
+        } else if (key == L"active") {
+            const int no = _wtoi(val.c_str());
+            if (no >= 1 && no <= static_cast<int>(kSetCount)) {
+                activeSet_ = static_cast<uint32_t>(no - 1);
+            }
+        } else if (cur >= 0) {
+            LogSet& t = sets_[static_cast<size_t>(cur)];
+            if (key == L"before-dir") t.beforeDir = val;
+            else if (key == L"after-dir") t.afterDir = val;
+            else if (key == L"before") t.beforePath = val;
+            else if (key == L"after") t.afterPath = val;
+        }
+    }
+}
+
+void App::SaveSettings() const {
+    const std::wstring path = SettingsConfigPath();
+    if (path.empty()) return;
+
+    std::wstring text =
+        L"# IO Log Scope 설정 — 지워도 됩니다. 지우면 처음 상태로 돌아갑니다.\r\n"
+        L"version 1\r\n";
+    text += Fmt(L"active\t%u\r\n", activeSet_ + 1);
+    for (uint32_t i = 0; i < sets_.size(); ++i) {
+        const LogSet& t = sets_[i];
+        text += Fmt(L"set\t%u\t", i + 1) + t.name + L"\r\n";
+        if (!t.beforeDir.empty()) text += L"before-dir\t" + t.beforeDir + L"\r\n";
+        if (!t.afterDir.empty()) text += L"after-dir\t" + t.afterDir + L"\r\n";
+        if (!t.beforePath.empty()) text += L"before\t" + t.beforePath + L"\r\n";
+        if (!t.afterPath.empty()) text += L"after\t" + t.afterPath + L"\r\n";
+    }
+
+    const int need = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                                         static_cast<int>(text.size()), nullptr, 0, nullptr,
+                                         nullptr);
+    if (need <= 0) return;
+    std::string utf8(static_cast<size_t>(need), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), &utf8[0], need,
+                        nullptr, nullptr);
+
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    const unsigned char bom[3] = {0xEF, 0xBB, 0xBF};
+    WriteFile(h, bom, 3, &written, nullptr);
+    WriteFile(h, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+    CloseHandle(h);
 }
 
 void App::GroupsChanged() {
@@ -1880,6 +2310,44 @@ void App::RebuildTopButtons(float clientWidth) {
         if (HasCompare()) add(ButtonId::CloseCompare, L"비교 해제", false, S(14.0f));
     }
 
+    // ---- 툴바 오른쪽: 세트 번호와 설정 --------------------------------------
+    // 오른쪽 끝에서부터 채운다. 왼쪽 버튼과 부딪히면 통째로 컨트롤 줄로 내린다.
+    const float leftEnd = x;
+    std::vector<Button> rightGroup;
+    {
+        float rx = 0.0f;
+        auto addRight = [&](ButtonId id, int32_t argv, const std::wstring& label,
+                            bool pressed) {
+            Button b;
+            b.id = id;
+            b.arg = argv;
+            b.label = label;
+            b.pressed = pressed;
+            const float w = MeasureText(dw_.get(), b.label, fUiCenter_.get()) + S(16.0f);
+            b.rect = Rect(rx, y, rx + w, y + h);
+            rx += w + S(3.0f);
+            rightGroup.push_back(std::move(b));
+        };
+        for (uint32_t i = 0; i < kSetCount; ++i) {
+            addRight(ButtonId::SelectSet, static_cast<int32_t>(i), Fmt(L"%u", i + 1),
+                     i == activeSet_);
+        }
+        rx += S(8.0f);
+        addRight(ButtonId::OpenSettings, -1, L"설정", false);
+
+        const float groupW = rx;
+        const float startX = clientWidth - pad - groupW;
+        if (startX > leftEnd + S(12.0f)) {
+            for (Button& b : rightGroup) {
+                b.rect.left += startX;
+                b.rect.right += startX;
+                buttons_.push_back(std::move(b));
+            }
+            rightGroup.clear();
+        }
+        // 자리가 없으면 아래 컨트롤 줄 맨 앞에 놓는다 (아래에서 처리한다).
+    }
+
     // ---- 컨트롤 줄: 자리가 모자라면 다음 줄로 넘긴다 --------------------------
     // 버튼을 한 줄에 밀어 넣던 것이 지금까지 겹침의 주된 원인이었다. 이제는
     // 넘치면 줄을 바꾸고, 그 결과 줄 수만큼 컨트롤 줄 높이를 늘린다.
@@ -1919,6 +2387,17 @@ void App::RebuildTopButtons(float clientWidth) {
         cx += gap;
         buttons_.push_back(std::move(b));
     };
+
+    // 툴바에 자리가 없어 내려온 세트·설정 버튼을 맨 앞에 놓는다.
+    if (!rightGroup.empty()) {
+        for (Button& b : rightGroup) {
+            const float w = b.rect.right - b.rect.left;
+            b.rect = place(w);
+            cx += S(3.0f);
+            buttons_.push_back(std::move(b));
+        }
+        cx += S(10.0f);
+    }
 
     addLabel(L"보기");
     addCtl(ButtonId::ModeLanes, L"레인", mode_ == PlotMode::Lanes, S(2.0f));
@@ -2040,6 +2519,7 @@ void App::Render() {
     RebuildTopButtons(clientW);   // controlsH_ 가 정해진다
     RebuildRailButtons(0.0f, RailWidth(clientW),
                        S(metrics::kToolbarH) + controlsH_);   // railHeaderH_ 가 정해진다
+    RebuildSettingsButtons();
     const Rects r = CalcRects();
 
     rt_->BeginDraw();
@@ -2052,6 +2532,7 @@ void App::Render() {
     DrawControls(r);
     DrawStatus(r);
     if (IsLoading()) DrawLoadingOverlay(r);
+    if (settingsOpen_) DrawSettings();
 
     // 글자 커서가 깜빡이려면 글자를 고치는 중에만 주기적으로 다시 그리면 된다.
     if (editTarget_ != EditTarget::None) SetTimer(hwnd_, kTimerCaret, 260, nullptr);
@@ -3174,7 +3655,7 @@ void App::DrawStatus(const Rects& r) {
 // 입력
 // ===========================================================================
 
-void App::OnButton(ButtonId id) {
+void App::OnButton(ButtonId id, int32_t arg) {
     switch (id) {
         case ButtonId::Open: OpenFileDialog(); break;
         case ButtonId::CancelLoad:
@@ -3278,6 +3759,48 @@ void App::OnButton(ButtonId id) {
         case ButtonId::FilterChanged: filter_ = -2; scrollRail_ = 0.0f; break;
         case ButtonId::FilterMissing: filter_ = -3; scrollRail_ = 0.0f; break;
         case ButtonId::FilterSelected: filter_ = -4; scrollRail_ = 0.0f; break;
+        case ButtonId::OpenSettings:
+            settingsOpen_ = true;
+            EndEditing();
+            break;
+        case ButtonId::CloseSettings:
+            EndEditing();
+            settingsOpen_ = false;
+            break;
+        case ButtonId::SelectSet:
+            if (arg >= 0) {
+                EndEditing();
+                settingsOpen_ = false;
+                SwitchSet(static_cast<uint32_t>(arg));
+            }
+            break;
+        case ButtonId::SetDirBefore:
+        case ButtonId::SetDirAfter: {
+            if (arg < 0 || static_cast<size_t>(arg) >= sets_.size()) break;
+            LogSet& t = sets_[static_cast<size_t>(arg)];
+            const bool before = id == ButtonId::SetDirBefore;
+            std::wstring& dir = before ? t.beforeDir : t.afterDir;
+            const std::wstring picked = PickFolder(
+                before ? L"이전 로그를 열 때 처음 보여 줄 폴더"
+                       : L"이후 로그를 열 때 처음 보여 줄 폴더",
+                dir);
+            if (!picked.empty()) {
+                dir = picked;
+                SaveSettings();
+            }
+            break;
+        }
+        case ButtonId::SetForget:
+            // 기억해 둔 것을 지운다. 세트 자체는 남는다 (여섯 벌은 늘 여섯 벌이다).
+            if (arg >= 0 && static_cast<size_t>(arg) < sets_.size()) {
+                LogSet& t = sets_[static_cast<size_t>(arg)];
+                t.beforeDir.clear();
+                t.afterDir.clear();
+                t.beforePath.clear();
+                t.afterPath.clear();
+                SaveSettings();
+            }
+            break;
         default: break;
     }
     // 척도를 바꾸면 값은 이미 계산돼 있으므로 다시 훑을 필요가 없지만, 요약
@@ -3306,6 +3829,13 @@ void App::OnButton(ButtonId id) {
 void App::OnLButtonDown(float x, float y, bool shift) {
     SetFocus(hwnd_);
 
+    // 설정 창이 열려 있으면 뒤쪽은 아무것도 받지 않는다.
+    if (settingsOpen_) {
+        SettingsClick(x, y);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
     // 검색 상자 안이면 그 자리에 글자 커서를 놓는다.
     {
         const Rects rr = CalcRects();
@@ -3332,7 +3862,7 @@ void App::OnLButtonDown(float x, float y, bool shift) {
     }
     for (const Button& b : buttons_) {
         if (!b.isLabel && b.id != ButtonId::None && Inside(b.rect, x, y)) {
-            OnButton(b.id);
+            OnButton(b.id, b.arg);
             return;
         }
     }
@@ -3490,6 +4020,20 @@ void App::OnLButtonUp(float x, float y, bool shift) {
 void App::OnMouseMove(float x, float y, bool /*dragging*/) {
     hoverX_ = x;
     hoverY_ = y;
+
+    // 설정 창이 열려 있으면 뒤쪽 화면은 아무 반응도 하지 않는다.
+    if (settingsOpen_) {
+        const int32_t was = hotSettingsBtn_;
+        hotSettingsBtn_ = -1;
+        for (size_t i = 0; i < settingsButtons_.size(); ++i) {
+            if (Inside(settingsButtons_[i].rect, x, y)) {
+                hotSettingsBtn_ = static_cast<int32_t>(i);
+                break;
+            }
+        }
+        if (was != hotSettingsBtn_) InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
 
     // 목록에서 채널을 끌고 있는 중이면, 지금 어느 그룹 위에 있는지 계산한다.
     if (dragChannel_ >= 0 || dragGroupRow_ >= 0) {
@@ -3700,6 +4244,11 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             break;
 
         case WM_KEYDOWN:
+            if (settingsOpen_ && wp == VK_ESCAPE && editTarget_ == EditTarget::None) {
+                settingsOpen_ = false;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
             if (wp == 'O' && (GetKeyState(VK_CONTROL) & 0x8000)) { OpenFileDialog(); return 0; }
             if (editTarget_ != EditTarget::None) {
                 // 글자를 고치는 중에는 방향키가 글자 커서를 옮긴다. 시간축으로

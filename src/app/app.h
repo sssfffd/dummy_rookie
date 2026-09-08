@@ -43,6 +43,7 @@ enum class ButtonId {
     ZoomIn, ZoomOut, Fit, ClearCursors,
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState,
     FilterChanged, FilterMissing, FilterSelected,
+    OpenSettings, CloseSettings, SelectSet, SetDirBefore, SetDirAfter, SetForget,
     GroupsExpand, GroupsCollapse, NewGroup, AddToNewGroup,
     AlignAuto, AlignReset, AlignLeft, AlignRight, Stagger,
     YFitVisible, CancelLoad, CompareColorCycle,
@@ -136,11 +137,27 @@ struct RailRow {
     uint32_t group = 0;   // Channel 이 속한 그룹 (드래그로 옮길 때 쓴다)
 };
 
-// 글자를 입력받는 곳. 검색창과 그룹 이름이 같은 방식으로 동작한다.
-enum class EditTarget { None, Search, GroupName };
+// 글자를 입력받는 곳. 검색창·그룹 이름·세트 이름이 모두 같은 방식으로 동작한다.
+enum class EditTarget { None, Search, GroupName, SetName };
+
+// 로그 세트.
+//
+// 한 세트는 "이전 로그 하나 + 이후 로그 하나" 한 벌이다. 여섯 벌을 두고 번호로
+// 오간다. 여섯 벌을 한꺼번에 메모리에 올려 두지는 않는다 — 로그 하나가 수백 MB 인
+// 자리에서 열두 개를 들고 있으면 그것만으로 메모리가 바닥난다. 세트를 바꾸면 그
+// 세트의 파일을 다시 읽는다.
+struct LogSet {
+    std::wstring name;                    // 사람이 붙인 이름
+    std::wstring beforeDir, afterDir;     // 파일 대화상자가 처음 열 폴더
+    std::wstring beforePath, afterPath;   // 마지막으로 이 세트에서 연 파일
+};
+
+constexpr uint32_t kSetCount = 6;
 
 struct Button {
     ButtonId id = ButtonId::None;
+    // 같은 종류의 버튼이 여러 개일 때 몇 번째인지 (세트 번호 등). 없으면 -1.
+    int32_t arg = -1;
     D2D1_RECT_F rect{};
     std::wstring label;
     bool pressed = false;   // 세그먼트 토글의 선택 상태
@@ -226,6 +243,27 @@ private:
     void StrokeLine(float x0, float y0, float x1, float y1,
                     const D2D1_COLOR_F& c, float w = 1.0f);
 
+    // ---- 설정 창 ----
+    // 창을 하나 더 띄우지 않고 화면 위에 겹쳐 그린다. 자식 창을 쓰면 Direct2D 가
+    // 매 프레임 그 위를 덮어써서 깜빡인다 (검색 상자에서 이미 겪었다).
+    D2D1_RECT_F SettingsRect() const;
+    void RebuildSettingsButtons();
+    void DrawSettings();
+    bool SettingsClick(float x, float y);
+    std::wstring VersionText() const;
+    std::wstring ExePath() const;
+
+    // ---- 로그 세트 ----
+    LogSet& ActiveSet() { return sets_[activeSet_]; }
+    const LogSet& ActiveSet() const { return sets_[activeSet_]; }
+    void SwitchSet(uint32_t set);
+    void RememberOpenPaths();          // 지금 열려 있는 경로를 지금 세트에 적는다
+    std::wstring SetTitle(uint32_t set) const;
+    std::wstring SettingsConfigPath() const;
+    void LoadSettings();
+    void SaveSettings() const;
+    std::wstring PickFolder(const wchar_t* title, const std::wstring& start);
+
     // ---- 데이터 ----
     void LoadPath(const std::wstring& path);
     // ---- 배경에서 읽기 ----
@@ -235,7 +273,9 @@ private:
     void DrawLoadingOverlay(const Rects& r);
     void CloseDataset();
     void OpenFileDialog();
-    std::wstring PickLogFile(const wchar_t* title);
+    // start 가 비어 있지 않으면 그 폴더에서 열린다. 비었으면 Windows 가 기억하는
+    // 마지막 폴더 그대로다.
+    std::wstring PickLogFile(const wchar_t* title, const std::wstring& start);
 
     // ---- 두 로그 비교 ----
     void OpenCompareDialog();
@@ -333,7 +373,7 @@ private:
     void OnMouseMove(float x, float y, bool dragging);
     void OnWheel(float x, float y, int delta, bool ctrl);
     void OnKey(WPARAM key);
-    void OnButton(ButtonId id);
+    void OnButton(ButtonId id, int32_t arg);
 
     LRESULT HandleMessage(UINT msg, WPARAM wp, LPARAM lp);
 
@@ -415,6 +455,7 @@ private:
 
     EditTarget editTarget_ = EditTarget::None;
     uint32_t editGroup_ = 0;
+    uint32_t editSet_ = 0;
     // 목록에서 끌어다 옮기는 중
     bool railDragging_ = false;
     bool dragOnCheckbox_ = false;
@@ -428,7 +469,18 @@ private:
     // 0 이상이면 LcChannelType
     int filter_ = -1;
     std::vector<Button> buttons_;
+    // 설정 창의 버튼은 따로 둔다. 창이 열려 있는 동안에는 뒤쪽 버튼이 눌리면
+    // 안 되므로, 입력 판정에서 아예 다른 목록을 본다.
+    std::vector<Button> settingsButtons_;
+    bool settingsOpen_ = false;
+    // 설정 창 버튼은 같은 ButtonId 가 여섯 개씩 있으므로, 어느 것 위에 있는지는
+    // 자리로 기억해야 한다. ButtonId 로 기억하면 여섯 개가 한꺼번에 밝아진다.
+    int32_t hotSettingsBtn_ = -1;
     ButtonId hotButton_ = ButtonId::None;
+
+    // 늘 여섯 벌이다. 설정 파일을 못 읽어도 비어 있지 않게 여기서 만들어 둔다.
+    std::vector<LogSet> sets_ = std::vector<LogSet>(kSetCount);
+    uint32_t activeSet_ = 0;
 };
 
 }  // namespace app

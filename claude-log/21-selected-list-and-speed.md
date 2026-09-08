@@ -1,7 +1,7 @@
 # 21 · 고른 IO 만 보는 목록, 그리고 속도
 
 - **날짜** 2026-09-07
-- **커밋** 이 커밋
+- **커밋** [`a0b80e7`](../../../commit/a0b80e7) Add a list of only the selected IOs, and stop drawing per sample
 - **바뀐 파일** `src/app/app.cpp`, `src/app/app.h`, `src/app/walker.h`(새로 만듦),
   `tests/logcore_test.cpp`, `README.md`
 

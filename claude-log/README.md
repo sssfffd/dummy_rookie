@@ -31,7 +31,8 @@
 | [18](18-custom-groups.md) | 2026-09-07 | 그룹 이름·구성원 직접 정하기, 설정 저장 | `70d5f5f` |
 | [19](19-group-order-shift-range-buttons.md) | 2026-09-07 | 그룹 순서 바꾸기, Shift 범위가 화면 순서를 따르도록, 버튼 튀어나옴 | `06867e9` |
 | [20](20-existence-diff-and-audit.md) | 2026-09-07 | 빠진 기능 점검, 한쪽에만 있는 IO 모아 보기 | `cc9e4c7` |
-| [21](21-selected-list-and-speed.md) | 2026-09-07 | 고른 IO 만 보는 목록, 그리기·비교 속도 | (이 커밋) |
+| [21](21-selected-list-and-speed.md) | 2026-09-07 | 고른 IO 만 보는 목록, 그리기·비교 속도 | `a0b80e7` |
+| [22](22-settings-window-and-six-sets.md) | 2026-09-08 | 설정 창, 판 번호 표시, 로그 세트 여섯 벌 | (이 커밋) |
 
 ## 규칙
 

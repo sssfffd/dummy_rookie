@@ -8,7 +8,30 @@ add_executable(logscope WIN32
   theme.h
 )
 
-target_include_directories(logscope PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# 판 번호와 커밋 해시를 헤더 하나로 만들어 둔다. 화면에 띄우는 값과 빌드가
+# 어긋나지 않게, 손으로 적는 자리를 만들지 않는다.
+set(LOGSCOPE_GIT_HASH "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    OUTPUT_VARIABLE LOGSCOPE_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(NOT LOGSCOPE_GIT_HASH)
+    set(LOGSCOPE_GIT_HASH "unknown")
+  endif()
+endif()
+string(TIMESTAMP LOGSCOPE_BUILD_DATE "%Y-%m-%d")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/version.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
+  @ONLY)
+
+target_include_directories(logscope PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(logscope PRIVATE logcore logscope_hardening)
 
 # 여기도 전부 Windows 구성요소다.
