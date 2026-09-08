@@ -33,7 +33,8 @@
 | [20](20-existence-diff-and-audit.md) | 2026-09-07 | 빠진 기능 점검, 한쪽에만 있는 IO 모아 보기 | `cc9e4c7` |
 | [21](21-selected-list-and-speed.md) | 2026-09-07 | 고른 IO 만 보는 목록, 그리기·비교 속도 | `a0b80e7` |
 | [22](22-settings-window-and-six-sets.md) | 2026-09-08 | 설정 창, 판 번호 표시, 로그 세트 여섯 벌 | `098c40a` |
-| [23](23-version-numbering-and-labels.md) | 2026-09-08 | 판 0.00 시작, 설정 창 정리, 그룹 버튼에 이름 | (이 커밋) |
+| [23](23-version-numbering-and-labels.md) | 2026-09-08 | 판 0.00 시작, 설정 창 정리, 그룹 버튼에 이름 | `a35af0d` |
+| [24](24-value-axis-zoom.md) | 2026-09-08 | 값 축 확대, "변화만" 눈금, 겹쳐보기 눈금 어긋남 수정 (0.01) | (이 커밋) |
 
 ## 규칙
 

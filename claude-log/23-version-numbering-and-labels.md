@@ -2,7 +2,7 @@
 
 - **판** 0.00
 - **날짜** 2026-09-08
-- **커밋** 이 커밋
+- **커밋** [`a35af0d`](../../../commit/a35af0d) Start version numbering at 0.00, trim the settings panel, name the group buttons
 - **바뀐 파일** `CMakeLists.txt`, `src/app/version.h.in`, `src/app/app.cpp`,
   `src/app/app.h`, `README.md`
 

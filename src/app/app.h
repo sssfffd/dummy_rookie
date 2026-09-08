@@ -38,7 +38,8 @@ private:
 enum class ButtonId {
     None, Open, OpenCompare, CloseCompare,
     OrientAuto, OrientRows, OrientCols,
-    ModeLanes, ModeOverlay, Normalize,
+    ModeLanes, ModeOverlay, ScaleRaw, ScaleNorm, ScaleDelta,
+    YZoomIn, YZoomOut, YReset,
     CompareBoth, CompareDiff,
     ZoomIn, ZoomOut, Fit, ClearCursors,
     SelectAll, SelectNone, FilterAll, FilterDigital, FilterAnalog, FilterState,
@@ -104,6 +105,15 @@ struct DiffStats {
     double area = 0.0;
     bool matched = false;    // 이후 로그에 짝이 있는가
 };
+
+// 겹쳐보기의 세로 눈금을 무엇으로 삼을지.
+//
+//   Raw    — 값 그대로. 여러 채널의 범위가 크게 다르면 작은 것이 눌린다
+//   Norm01 — 채널마다 자기 범위를 0–1 로 접는다. 모양만 견줄 때
+//   Delta  — 채널마다 **기준값을 뺀다**. 값이 몇천인데 1 만큼 움직이는 것을 보려면
+//            이것이 유일하게 쓸 만하다. 기준값은 그 채널의 첫 표본이라 시간축을
+//            옮겨도 흔들리지 않는다
+enum class YScale { Raw, Norm01, Delta };
 
 // 겹쳐보기에서 한 번에 그릴 수 있는 채널 수. 범주형 색이 여덟 개까지만
 // 서로 구분되므로 그 이상은 색으로 구별이 안 된다.
@@ -343,6 +353,13 @@ private:
     void OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& hi) const;
     // 채널 하나의 값을 세로 눈금 좌표로. 정규화가 켜져 있으면 0..1 로 접는다.
     double SeriesValue(uint32_t ch, double raw) const;
+    // "변화만" 에서 빼는 기준값. 채널의 첫 표본. 파일을 열 때 한 번 구해 둔다.
+    double Baseline(uint32_t ch) const;
+    void RebuildBaselines();
+    // 자동으로 맞춘 세로 범위에 사용자의 확대·이동을 얹는다. 축 눈금과 파형이
+    // 같은 함수를 거치게 해서, 숫자와 그림이 어긋날 자리를 없앤다.
+    void ApplyYZoom(double& lo, double& hi) const;
+    void ZoomYAt(float clientY, double factor);
 
     // ---- 빠르게 그리기 ----
     // [a,b] 안의 표본 수. 픽셀보다 촘촘한지 가늠할 때 쓴다.
@@ -406,6 +423,7 @@ private:
     DiffMetric metric_ = DiffMetric::Peak;
     // 값 범위 대비 이 비율보다 작은 차이는 같다고 본다. 진동을 걸러내는 손잡이.
     double tolerance_ = 0.001;
+    std::vector<double> baseline_;         // 채널마다 "변화만" 의 기준값
     std::vector<double> cmpLo_, cmpHi_;    // 이전·이후를 함께 담는 값 범위
     std::vector<double> diffLo_, diffHi_;  // 차이 값의 범위
     CompareMode compareMode_ = CompareMode::Both;
@@ -437,7 +455,11 @@ private:
     double dragT0_ = 0.0, dragT1_ = 0.0;
 
     PlotMode mode_ = PlotMode::Lanes;
-    bool normalize_ = false;
+    YScale yScale_ = YScale::Raw;
+    // 세로 축 확대. 1.0 이면 자동으로 맞춘 범위 그대로, 2.0 이면 그 절반 폭만 본다.
+    // yPan_ 은 자동 범위 폭을 1 로 봤을 때 가운데가 얼마나 옮겨졌는가.
+    double yZoom_ = 1.0;
+    double yPan_ = 0.0;
     // 세로 눈금을 보이는 구간에 맞출지. 꺼 두면 선택한 채널의 전체 범위로
     // 고정되어, 시간축을 옮겨도 배율이 갑자기 바뀌지 않는다.
     bool yFitVisible_ = false;

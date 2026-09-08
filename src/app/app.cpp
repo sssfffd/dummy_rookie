@@ -612,6 +612,9 @@ void App::CloseCompare() {
 
 void App::CloseDataset() {
     if (ds_) { lc_close(ds_); ds_ = nullptr; }
+    baseline_.clear();
+    yZoom_ = 1.0;
+    yPan_ = 0.0;
     matchB_.clear();
     diffCount_.clear();
     selected_.clear();
@@ -762,6 +765,9 @@ void App::FinishLoad(const std::shared_ptr<LoadJob>& job) {
         // 저장된 그룹이 없으면 예전처럼 10개씩 묶어 시작한다.
         EnsureDefaultGroups();
         ResolveGroups();
+        RebuildBaselines();
+        yZoom_ = 1.0;
+        yPan_ = 0.0;
         ResetViewToData();
 
         message_ = lc_notes(ds_);
@@ -1874,8 +1880,13 @@ void App::DrawDifferenceBand(uint32_t ch, const D2D1_RECT_F& plot, float top, fl
     IndexRange(i0, i1);
     if (i0 < 0 || i1 < i0) return;
 
+    // 겹쳐보기에서는 눈금이 세로 눈금 방식(원래값·0–1·변화만)을 따른다. 여기서
+    // 그 변환을 빼먹으면 띠만 다른 자리에 그려지고, 정규화를 켜면 화면 밖으로
+    // 나가 아예 보이지 않는다.
+    const bool scaled = mode_ == PlotMode::Overlay;
     auto yOf = [&](double val) {
-        return bottom - static_cast<float>((val - lo) / (hi - lo)) * (bottom - top);
+        const double y = scaled ? SeriesValue(ch, val) : val;
+        return bottom - static_cast<float>((y - lo) / (hi - lo)) * (bottom - top);
     };
     const bool step = lc_channel_type(ds_, ch) != LC_CH_ANALOG;
 
@@ -1959,8 +1970,12 @@ void App::DrawResampled(uint32_t ch, const D2D1_RECT_F& plot, float top, float b
     IndexRange(i0, i1);
     if (i0 < 0 || i1 < i0) return;
 
+    // 차이 곡선(Δ)은 그 자체가 이미 뺄셈 결과라 다시 변환하지 않는다. 겹쳐 그리는
+    // 이후 곡선은 이전 곡선과 같은 변환을 거쳐야 두 선이 같은 눈금 위에 놓인다.
+    const bool scaled = (mode_ == PlotMode::Overlay) && !diff;
     auto yOf = [&](double val) {
-        return bottom - static_cast<float>((val - lo) / (hi - lo)) * (bottom - top);
+        const double y = scaled ? SeriesValue(ch, val) : val;
+        return bottom - static_cast<float>((y - lo) / (hi - lo)) * (bottom - top);
     };
     const bool step = lc_channel_type(ds_, ch) != LC_CH_ANALOG;
     const uint32_t chB = static_cast<uint32_t>(matchB_[ch]);
@@ -2394,11 +2409,28 @@ void App::RebuildTopButtons(float clientWidth) {
     addCtl(ButtonId::OrientRows, L"행 = IO", orientation_ == LC_ORIENT_ROWS, S(2.0f));
     addCtl(ButtonId::OrientCols, L"열 = IO", orientation_ == LC_ORIENT_COLS, S(14.0f));
 
-    if (mode_ == PlotMode::Overlay) {
-        // 레인은 채널마다 눈금이 따로라 이 설정이 뜻을 갖지 않는다.
+    if (mode_ == PlotMode::Lanes) {
+        // 레인은 채널마다 눈금이 따로다. 그래도 "보이는 구간에 맞춤" 은 뜻이 있다 —
+        // 값이 몇천인데 1 만큼 움직이는 신호는 전체 범위로는 평평한 선이지만,
+        // 보이는 구간에 맞추면 그 움직임이 레인을 가득 채운다.
         addLabel(L"세로 눈금");
-        addCtl(ButtonId::Normalize, L"0–1 정규화", normalize_, S(2.0f));
         addCtl(ButtonId::YFitVisible, L"보이는 구간에 맞춤", yFitVisible_, S(14.0f));
+    }
+
+    if (mode_ == PlotMode::Overlay) {
+        addLabel(L"세로 눈금");
+        addCtl(ButtonId::ScaleRaw, L"원래값", yScale_ == YScale::Raw, S(2.0f));
+        addCtl(ButtonId::ScaleNorm, L"0–1 정규화", yScale_ == YScale::Norm01, S(2.0f));
+        addCtl(ButtonId::ScaleDelta, L"변화만", yScale_ == YScale::Delta, S(2.0f));
+        addCtl(ButtonId::YFitVisible, L"보이는 구간에 맞춤", yFitVisible_, S(14.0f));
+
+        addLabel(L"값 축");
+        addCtl(ButtonId::YZoomOut, L"축소 −", false, S(2.0f));
+        addCtl(ButtonId::YZoomIn, L"확대 ＋", false, S(2.0f));
+        addCtl(ButtonId::YReset,
+               (yZoom_ > 1.0001 || yPan_ != 0.0) ? Fmt(L"맞춤 (지금 %.0f배)", yZoom_).c_str()
+                                                 : L"맞춤",
+               false, S(14.0f));
     }
 
     addLabel(L"확대");
@@ -3118,6 +3150,23 @@ void App::DrawLaneAnalog(uint32_t ch, D2D1_RECT_F lane, const D2D1_RECT_F& plot)
     const float width = (std::max)(rightX - leftX, 10.0f);
 
     double mn = lc_channel_min(ds_, ch), mx = lc_channel_max(ds_, ch);
+    // 보이는 구간에 맞추면, 전체로 보면 평평한 신호도 그 안의 움직임이 레인을
+    // 가득 채운다. 값이 4000 대에서 1 만큼 오르내리는 신호가 여기에 해당한다.
+    if (yFitVisible_) {
+        double vlo = std::numeric_limits<double>::infinity();
+        double vhi = -std::numeric_limits<double>::infinity();
+        for (int i = i0; i <= i1; ++i) {
+            if (!std::isfinite(v[i])) continue;
+            vlo = (std::min)(vlo, v[i]);
+            vhi = (std::max)(vhi, v[i]);
+        }
+        if (std::isfinite(vlo) && std::isfinite(vhi)) {
+            if (vhi <= vlo) { vlo -= 0.5; vhi += 0.5; }
+            const double margin = (vhi - vlo) * 0.08;
+            mn = vlo - margin;
+            mx = vhi + margin;
+        }
+    }
     if (!(mx > mn)) mx = mn + 1.0;
     auto yOf = [&](double val) {
         return bot - static_cast<float>((val - mn) / (mx - mn)) * (bot - top);
@@ -3244,17 +3293,101 @@ std::vector<uint32_t> App::OverlayChannels() const {
     return out;
 }
 
+double App::Baseline(uint32_t ch) const {
+    return (ch < baseline_.size()) ? baseline_[ch] : 0.0;
+}
+
+// 채널마다 "변화만" 에서 뺄 기준값을 구해 둔다. 첫 번째 유효한 표본을 쓴다 —
+// 보이는 구간마다 다시 잡으면 시간축을 옮길 때마다 그림이 통째로 튀어 오른다.
+void App::RebuildBaselines() {
+    baseline_.clear();
+    if (!ds_) return;
+    const uint32_t n = lc_channel_count(ds_);
+    const uint32_t samples = lc_sample_count(ds_);
+    baseline_.assign(n, 0.0);
+    for (uint32_t ch = 0; ch < n; ++ch) {
+        const double* v = lc_channel_values(ds_, ch);
+        if (!v) continue;
+        for (uint32_t i = 0; i < samples; ++i) {
+            if (std::isfinite(v[i])) { baseline_[ch] = v[i]; break; }
+        }
+    }
+}
+
 double App::SeriesValue(uint32_t ch, double raw) const {
-    if (!normalize_) return raw;
-    const double lo = lc_channel_min(ds_, ch);
-    const double hi = lc_channel_max(ds_, ch);
-    const double span = (hi > lo) ? (hi - lo) : 1.0;
-    return (raw - lo) / span;
+    switch (yScale_) {
+        case YScale::Norm01: {
+            const double lo = lc_channel_min(ds_, ch);
+            const double hi = lc_channel_max(ds_, ch);
+            const double span = (hi > lo) ? (hi - lo) : 1.0;
+            return (raw - lo) / span;
+        }
+        case YScale::Delta:
+            // 이전·이후 두 로그 모두 **이전 로그의 기준값**을 뺀다. 각자 자기
+            // 기준을 빼면 둘 사이의 차이가 없어져 버린다.
+            return raw - Baseline(ch);
+        case YScale::Raw:
+        default:
+            return raw;
+    }
+}
+
+void App::ApplyYZoom(double& lo, double& hi) const {
+    if (!(hi > lo)) return;
+    const double span = hi - lo;
+    const double center = (lo + hi) * 0.5 + yPan_ * span;
+    const double half = span * 0.5 / ((yZoom_ > 0.0) ? yZoom_ : 1.0);
+    lo = center - half;
+    hi = center + half;
+}
+
+// 커서가 가리키던 값이 제자리에 남도록 확대한다. 가운데를 기준으로 확대하면
+// 값이 5000 근처에 있는 신호는 한 번만 굴려도 화면 밖으로 나가 버린다.
+void App::ZoomYAt(float clientY, double factor) {
+    if (mode_ != PlotMode::Overlay || !ds_) return;
+    const Rects r = CalcRects();
+    const float top = r.plot.top + S(24.0f) + S(10.0f);
+    const float bottom = r.plot.bottom - S(10.0f);
+    if (!(bottom > top)) return;
+
+    const std::vector<uint32_t> shown = OverlayChannels();
+    double base0 = 0.0, base1 = 1.0;
+    OverlayRange(shown, base0, base1);          // 확대가 이미 얹힌 값
+    double raw0 = base0, raw1 = base1;          // 확대 이전의 자동 범위를 되돌린다
+    {
+        const double half = (base1 - base0) * 0.5;
+        const double center = (base0 + base1) * 0.5;
+        const double span0 = half * 2.0 * ((yZoom_ > 0.0) ? yZoom_ : 1.0);
+        const double c0 = center - yPan_ * span0;
+        raw0 = c0 - span0 * 0.5;
+        raw1 = c0 + span0 * 0.5;
+    }
+    const double span0 = raw1 - raw0;
+    if (!(span0 > 0.0)) return;
+
+    // 버튼으로 부를 때는 (clientY < 0) 화면 한가운데를 기준으로 삼는다.
+    const float anchor = (clientY < 0.0f) ? (top + bottom) * 0.5f : clientY;
+    const float clamped = (std::min)((std::max)(anchor, top), bottom);
+    const double frac = static_cast<double>(bottom - clamped) / (bottom - top);
+    const double v = base0 + frac * (base1 - base0);   // 커서가 가리키던 값
+
+    const double newZoom = (std::min)((std::max)(yZoom_ * factor, 1.0), 1.0e7);
+    const double newHalf = span0 * 0.5 / newZoom;
+    const double newCenter = v - (2.0 * frac - 1.0) * newHalf;
+
+    yZoom_ = newZoom;
+    yPan_ = (newCenter - (raw0 + raw1) * 0.5) / span0;
+    yPan_ = (std::min)((std::max)(yPan_, -4.0), 4.0);
 }
 
 void App::OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& hi) const {
     const bool diff = HasCompare() && compareMode_ == CompareMode::Diff;
-    if (normalize_ && !diff) { lo = 0.0; hi = 1.0; return; }
+    if (yScale_ == YScale::Norm01 && !diff) {
+        lo = 0.0;
+        hi = 1.0;
+        ApplyYZoom(lo, hi);
+        return;
+    }
 
     lo = std::numeric_limits<double>::infinity();
     hi = -std::numeric_limits<double>::infinity();
@@ -3274,7 +3407,7 @@ void App::OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& h
         i0 = 0;
         i1 = static_cast<int>(n) - 1;
     }
-    if (!t || i0 < 0 || i1 < i0) { lo = 0.0; hi = 1.0; return; }
+    if (!t || i0 < 0 || i1 < i0) { lo = 0.0; hi = 1.0; ApplyYZoom(lo, hi); return; }
 
     for (uint32_t ch : shown) {
         const double* v = lc_channel_values(ds_, ch);
@@ -3290,32 +3423,37 @@ void App::OverlayRange(const std::vector<uint32_t>& shown, double& lo, double& h
         }
         // 전체 범위라면 채널이 이미 들고 있는 최소·최대를 쓰면 된다. 샘플을
         // 다시 훑을 이유가 없다.
+        // 눈금과 파형이 어긋나지 않게, 범위도 그리는 것과 **같은 변환**을 거친다.
+        // 변환은 값에 대해 단조롭게 늘어나므로 최소·최대에 그대로 걸면 된다.
         if (!yFitVisible_) {
-            lo = (std::min)(lo, HasCompare() && ch < cmpLo_.size() ? cmpLo_[ch]
-                                                                   : lc_channel_min(ds_, ch));
-            hi = (std::max)(hi, HasCompare() && ch < cmpHi_.size() ? cmpHi_[ch]
-                                                                   : lc_channel_max(ds_, ch));
+            const double rawLo = HasCompare() && ch < cmpLo_.size() ? cmpLo_[ch]
+                                                                    : lc_channel_min(ds_, ch);
+            const double rawHi = HasCompare() && ch < cmpHi_.size() ? cmpHi_[ch]
+                                                                    : lc_channel_max(ds_, ch);
+            lo = (std::min)(lo, SeriesValue(ch, rawLo));
+            hi = (std::max)(hi, SeriesValue(ch, rawHi));
             continue;
         }
         for (int i = i0; i <= i1; ++i) {
             if (std::isfinite(v[i])) {
-                lo = (std::min)(lo, v[i]);
-                hi = (std::max)(hi, v[i]);
+                lo = (std::min)(lo, SeriesValue(ch, v[i]));
+                hi = (std::max)(hi, SeriesValue(ch, v[i]));
             }
             if (HasCompare()) {
                 const double b = CompareValueAt(ch, t[i]);
                 if (std::isfinite(b)) {
-                    lo = (std::min)(lo, b);
-                    hi = (std::max)(hi, b);
+                    lo = (std::min)(lo, SeriesValue(ch, b));
+                    hi = (std::max)(hi, SeriesValue(ch, b));
                 }
             }
         }
     }
-    if (!std::isfinite(lo) || !std::isfinite(hi)) { lo = 0.0; hi = 1.0; return; }
+    if (!std::isfinite(lo) || !std::isfinite(hi)) { lo = 0.0; hi = 1.0; ApplyYZoom(lo, hi); return; }
     if (hi <= lo) { hi = lo + 1.0; }
     const double pad = (hi - lo) * 0.08;
     lo -= pad;
     hi += pad;
+    ApplyYZoom(lo, hi);
 }
 
 void App::DrawSeries(uint32_t ch, const D2D1_RECT_F& plot, float top, float bottom,
@@ -3476,7 +3614,12 @@ void App::DrawOverlayView(const Rects& r) {
         if (yv < lo || yv > hi) continue;
         const float y = bottom - static_cast<float>((yv - lo) / (hi - lo)) * (bottom - top);
         StrokeLine(gutterX, Px(y), rightX, Px(y), pal_.grid);
-        DrawLabel(normalize_ ? FormatNumber(yv) : FormatNumber(yv), fSmallRight_.get(),
+        // 0–1 정규화에서는 값이 채널마다 뜻이 달라진다. 숫자를 그대로 두면 어느
+        // 채널의 값인지 알 수 없으므로 % 로 적어 "범위 안에서의 위치" 임을 밝힌다.
+        const std::wstring lab = (yScale_ == YScale::Norm01)
+                                     ? Fmt(L"%.0f%%", yv * 100.0)
+                                     : FormatNumber(yv);
+        DrawLabel(lab, fSmallRight_.get(),
                   Rect(r.plot.left + S(4.0f), y - S(8.0f), gutterX - S(8.0f), y + S(8.0f)),
                   pal_.ink3);
     }
@@ -3707,7 +3850,12 @@ void App::OnButton(ButtonId id, int32_t arg) {
             scrollPlot_ = 0.0f;
             break;
         }
-        case ButtonId::Normalize: normalize_ = !normalize_; break;
+        case ButtonId::ScaleRaw:   yScale_ = YScale::Raw; break;
+        case ButtonId::ScaleNorm:  yScale_ = YScale::Norm01; break;
+        case ButtonId::ScaleDelta: yScale_ = YScale::Delta; break;
+        case ButtonId::YZoomIn:    ZoomYAt(-1.0f, 1.6); break;
+        case ButtonId::YZoomOut:   ZoomYAt(-1.0f, 1.0 / 1.6); break;
+        case ButtonId::YReset:     yZoom_ = 1.0; yPan_ = 0.0; break;
         case ButtonId::ZoomIn:  if (ds_) ZoomAt(ZoomAnchorX(), 0.75); break;
         case ButtonId::ZoomOut: if (ds_) ZoomAt(ZoomAnchorX(), 1.0 / 0.75); break;
         case ButtonId::YFitVisible: yFitVisible_ = !yFitVisible_; break;
@@ -4092,6 +4240,14 @@ void App::OnWheel(float x, float y, int delta, bool ctrl) {
         return;
     }
     if (!ds_) return;
+
+    // Shift 를 누른 채 굴리면 시간이 아니라 **값** 축을 확대한다. 값이 몇천인데
+    // 1 만큼 움직이는 신호는 이것 없이는 볼 방법이 없다.
+    if ((GetKeyState(VK_SHIFT) & 0x8000) && mode_ == PlotMode::Overlay) {
+        ZoomYAt(y, std::pow(1.15, static_cast<double>(notches)));
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
 
     // 겹쳐보기는 세로로 스크롤할 것이 없으므로 휠을 바로 확대에 쓴다.
     if (ctrl || mode_ == PlotMode::Overlay) {
