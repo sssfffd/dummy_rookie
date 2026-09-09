@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.18)
 # 판 번호는 여기 한 곳에서만 나온다. **파일을 고칠 때마다 0.01 씩 올린다.**
 # 화면(설정 창)과 version.h 가 모두 이 값을 그대로 쓴다.
-set(LOGSCOPE_VERSION "0.02")
+set(LOGSCOPE_VERSION "0.03")
 project(LogScope LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------

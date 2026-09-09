@@ -2,7 +2,7 @@
 
 - **판** 0.02
 - **날짜** 2026-09-08
-- **커밋** 이 커밋
+- **커밋** [`80486e3`](../../../commit/80486e3) Spread repeated timestamps, and build one binary for Windows 7 through 11
 - **바뀐 파일** `src/core/dataset.cpp`, `src/core/xlsx_reader.cpp`,
   `tests/logcore_test.cpp`, `CMakeLists.txt`, `src/app/CMakeLists.txt`,
   `src/core/CMakeLists.txt`, `src/app/app.cpp`, `src/app/logscope.manifest`, `README.md`

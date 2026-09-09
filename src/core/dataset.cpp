@@ -24,18 +24,37 @@ std::wstring to_wstr(size_t v) {
     return std::wstring(buf, static_cast<size_t>(n));
 }
 
-void transpose(Grid& g) {
-    size_t w = 0;
-    for (const Row& r : g) w = (std::max)(w, r.size());
-    Grid out(w);
-    for (size_t c = 0; c < w; ++c) {
-        out[c].resize(g.size());
-        for (size_t r = 0; r < g.size(); ++r) {
-            if (c < g[r].size()) out[c][r] = std::move(g[r][c]);
-        }
+// 표를 옮겨 담지 않고 들여다보기만 하는 창.
+//
+// 열이 채널인 배치에서 격자를 통째로 뒤집으면(transpose) 같은 크기의 격자를 하나
+// 더 만들게 된다. 1000만 칸짜리 로그에서는 그것만으로 메모리가 두 배가 되고,
+// 칸 하나하나를 옮기는 시간도 그대로 든다. 뒤집는 대신 읽을 때 첨자를 바꾼다.
+//
+// line 0 이 시간축, 1 부터가 채널이다. idx 0 은 이름 칸, 1 부터가 값이다.
+struct View {
+    const Grid* g = nullptr;
+    size_t row0 = 0;      // 표가 시작하는 행 (그 앞은 머리말)
+    size_t col0 = 0;      // 표가 시작하는 열
+    bool flip = false;    // true = 열이 채널
+    size_t lines = 0;
+    size_t span = 0;
+
+    const Cell* at(size_t line, size_t idx) const {
+        const size_t r = flip ? (row0 + idx) : (row0 + line);
+        const size_t c = flip ? (col0 + line) : (col0 + idx);
+        if (!g || r >= g->size()) return nullptr;
+        const Row& row = (*g)[r];
+        return (c < row.size()) ? &row[c] : nullptr;
     }
-    g.swap(out);
-}
+    bool line_has_content(size_t line) const {
+        for (size_t i = 0; i < span; ++i) {
+            const Cell* c = at(line, i);
+            if (c && !c->empty()) return true;
+        }
+        return false;
+    }
+};
+
 
 bool row_has_content(const Row& r) {
     for (const Cell& c : r) {
@@ -51,30 +70,30 @@ const Cell* cell_at(const Row& r, size_t i) {
 // 헤더 행(첫 행)의 1..n 열을 시간축으로 읽는다.
 // 서로 다른 해석이 섞이면 가장 많이 나온 해석을 쓰고, 그마저 60% 미만이면
 // 샘플 번호로 물러선다. 값이 증가하지 않아도 샘플 번호로 물러선다.
-LcTimeKind parse_time_axis(const Row& header, size_t n, std::vector<double>& times,
+LcTimeKind parse_time_axis(const View& v, size_t line, size_t n, std::vector<double>& times,
                            Dataset& ds) {
     times.assign(n, kNaN);
     std::vector<LcTimeKind> kinds(n, LC_TIME_INDEX);
     size_t counts[4] = {0, 0, 0, 0};
 
     for (size_t i = 0; i < n; ++i) {
-        const Cell* c = cell_at(header, i + 1);
+        const Cell* c = v.at(line, i + 1);
         if (!c || c->empty()) continue;
-        double v = 0;
+        double val = 0;
         LcTimeKind k = LC_TIME_INDEX;
         switch (c->kind) {
-            case Cell::Kind::DateMs: v = c->num; k = LC_TIME_DATE_MS; break;
+            case Cell::Kind::DateMs: val = c->num; k = LC_TIME_DATE_MS; break;
             case Cell::Kind::Number:
-            case Cell::Kind::Bool:   v = c->num; k = LC_TIME_NUMBER; break;
+            case Cell::Kind::Bool:   val = c->num; k = LC_TIME_NUMBER; break;
             case Cell::Kind::Text:
-                if (parse_clock_ms(c->text, v)) k = LC_TIME_CLOCK_MS;
-                else if (parse_iso_ms(c->text, v)) k = LC_TIME_DATE_MS;
-                else if (parse_number(c->text, v)) k = LC_TIME_NUMBER;
+                if (parse_clock_ms(c->text, val)) k = LC_TIME_CLOCK_MS;
+                else if (parse_iso_ms(c->text, val)) k = LC_TIME_DATE_MS;
+                else if (parse_number(c->text, val)) k = LC_TIME_NUMBER;
                 break;
             default: break;
         }
         if (k == LC_TIME_INDEX) continue;
-        times[i] = v;
+        times[i] = val;
         kinds[i] = k;
         counts[static_cast<int>(k)]++;
     }
@@ -162,11 +181,11 @@ LcTimeKind parse_time_axis(const Row& header, size_t n, std::vector<double>& tim
 }
 
 // 값 묶음을 보고 채널 종류를 정한다.
-LcChannelType classify(const Row& row, size_t n, bool& any_value) {
+LcChannelType classify(const View& v, size_t line, size_t n, bool& any_value) {
     bool numeric = true, digital = true;
     any_value = false;
     for (size_t i = 0; i < n; ++i) {
-        const Cell* c = cell_at(row, i + 1);
+        const Cell* c = v.at(line, i + 1);
         if (!c || c->empty()) continue;
         any_value = true;
         if (c->kind == Cell::Kind::Bool) continue;  // 0/1 로 읽힌다
@@ -174,9 +193,9 @@ LcChannelType classify(const Row& row, size_t n, bool& any_value) {
             if (c->num != 0.0 && c->num != 1.0) digital = false;
             continue;
         }
-        double v = 0;
-        if (parse_number(c->text, v)) {
-            if (v != 0.0 && v != 1.0) digital = false;
+        double num = 0;
+        if (parse_number(c->text, num)) {
+            if (num != 0.0 && num != 1.0) digital = false;
             continue;
         }
         numeric = false;
@@ -457,14 +476,6 @@ Layout detect_layout(const Grid& g, uint32_t requested) {
 }
 
 // 블록 시작 위치 앞쪽을 잘라낸다.
-void crop(Grid& g, size_t row0, size_t col0) {
-    if (row0 > 0) g.erase(g.begin(), g.begin() + static_cast<std::ptrdiff_t>((std::min)(row0, g.size())));
-    if (col0 == 0) return;
-    for (Row& r : g) {
-        if (r.size() <= col0) { r.clear(); continue; }
-        r.erase(r.begin(), r.begin() + static_cast<std::ptrdiff_t>(col0));
-    }
-}
 
 // 0 기반 열 번호를 엑셀 열 이름으로. 2 -> "C"
 std::wstring column_label(size_t col) {
@@ -541,8 +552,24 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
     out.first_row = static_cast<uint32_t>(lay.row0 + 1);
     out.first_col = static_cast<uint32_t>(lay.col0 + 1);
 
-    crop(grid, lay.row0, lay.col0);
-    if (lay.orientation == LC_ORIENT_COLS) transpose(grid);
+    // 표를 옮겨 담지 않는다. 머리말을 건너뛰는 것도, 열이 채널인 배치를 뒤집는
+    // 것도 첨자를 바꿔 읽는 것으로 끝낸다 (View). 예전에는 여기서 격자를 통째로
+    // 한 벌 더 만들었고, 큰 로그에서는 그것이 여는 시간과 메모리의 절반이었다.
+    View view;
+    view.g = &grid;
+    view.row0 = lay.row0;
+    view.col0 = lay.col0;
+    view.flip = (lay.orientation == LC_ORIENT_COLS);
+    {
+        size_t rows = (grid.size() > lay.row0) ? (grid.size() - lay.row0) : 0;
+        size_t cols = 0;
+        for (size_t r = lay.row0; r < grid.size(); ++r) {
+            cols = (std::max)(cols, grid[r].size());
+        }
+        cols = (cols > lay.col0) ? (cols - lay.col0) : 0;
+        view.lines = view.flip ? cols : rows;
+        view.span = view.flip ? rows : cols;
+    }
 
     if (lay.row0 > 0 || lay.col0 > 0) {
         out.add_note(L"데이터 표가 " + to_wstr(lay.row0 + 1) + L"행 " +
@@ -558,18 +585,21 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
         }
     }
 
-    grid.erase(std::remove_if(grid.begin(), grid.end(),
-                              [](const Row& r) { return !row_has_content(r); }),
-               grid.end());
-    if (grid.size() < 2) return LC_ERR_NO_DATA;
+    // 값이 하나도 없는 줄은 건너뛴다 (엑셀이 남긴 빈 행/열). 지우는 대신 쓸 줄의
+    // 번호만 모아 둔다 — 격자를 건드리지 않아야 옮겨 담지 않은 뜻이 산다.
+    std::vector<size_t> use;
+    use.reserve(view.lines);
+    for (size_t line = 0; line < view.lines; ++line) {
+        if (view.line_has_content(line)) use.push_back(line);
+    }
+    if (use.size() < 2) return LC_ERR_NO_DATA;
 
-    size_t width = 0;
-    for (const Row& r : grid) width = (std::max)(width, r.size());
-    // 값이 하나도 없는 뒤쪽 열은 잘라낸다 (엑셀이 남긴 빈 열 방지)
+    // 값이 하나도 없는 뒤쪽 칸도 잘라낸다.
+    size_t width = view.span;
     while (width > 1) {
         bool empty = true;
-        for (const Row& r : grid) {
-            const Cell* c = cell_at(r, width - 1);
+        for (size_t line : use) {
+            const Cell* c = view.at(line, width - 1);
             if (c && !c->empty()) { empty = false; break; }
         }
         if (!empty) break;
@@ -579,29 +609,31 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
 
     const size_t n = width - 1;
     if (lim.over_samples(n)) return LC_ERR_TOO_LARGE;
-    if (lim.over_channels(grid.size() - 1)) return LC_ERR_TOO_LARGE;
+    if (lim.over_channels(use.size() - 1)) return LC_ERR_TOO_LARGE;
 
+    const size_t header = use[0];
     out.times.clear();
-    out.time_kind = parse_time_axis(grid[0], n, out.times, out);
-    out.time_unit = (out.time_kind == LC_TIME_NUMBER && !grid[0].empty() &&
-                     grid[0][0].kind == Cell::Kind::Text)
-                        ? unit_from_label(grid[0][0].text)
+    out.time_kind = parse_time_axis(view, header, n, out.times, out);
+    const Cell* unit_cell = view.at(header, 0);
+    out.time_unit = (out.time_kind == LC_TIME_NUMBER && unit_cell &&
+                     unit_cell->kind == Cell::Kind::Text)
+                        ? unit_from_label(unit_cell->text)
                         : std::wstring();
 
     out.channels.clear();
-    out.channels.reserve(grid.size() - 1);
+    out.channels.reserve(use.size() - 1);
 
     size_t skipped = 0, unnamed = 0;
-    for (size_t r = 1; r < grid.size(); ++r) {
-        if (!lim.progress.report(r, grid.size() - 1)) return LC_ERR_CANCELLED;
-        const Row& row = grid[r];
+    for (size_t k = 1; k < use.size(); ++k) {
+        if (!lim.progress.report(k, use.size() - 1)) return LC_ERR_CANCELLED;
+        const size_t line = use[k];
         bool any_value = false;
-        const LcChannelType type = classify(row, n, any_value);
+        const LcChannelType type = classify(view, line, n, any_value);
         if (!any_value) { ++skipped; continue; }
 
         Channel ch;
         ch.type = type;
-        const Cell* name_cell = cell_at(row, 0);
+        const Cell* name_cell = view.at(line, 0);
         if (name_cell && !name_cell->empty()) {
             ch.name = (name_cell->kind == Cell::Kind::Text)
                           ? trim(name_cell->text)
@@ -624,7 +656,7 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
         double mx = -std::numeric_limits<double>::infinity();
 
         for (size_t i = 0; i < n; ++i) {
-            const Cell* c = cell_at(row, i + 1);
+            const Cell* c = view.at(line, i + 1);
             if (!c || c->empty()) continue;
             double v = kNaN;
 
@@ -674,10 +706,16 @@ LcStatus build_dataset(Grid& grid, uint32_t orientation, const Limits& lim, Data
             if (v > mx) mx = v;
         }
 
-        // 이 행은 채널로 옮겼으니 격자에서 비운다. 그러지 않으면 파일 하나를
-        // 격자와 채널 두 벌로 들고 있게 되어 큰 파일에서 메모리가 두 배로 든다.
-        grid[r].clear();
-        grid[r].shrink_to_fit();
+        // 행이 채널인 배치라면 이 행은 다 옮겼으므로 격자에서 비운다. 그러지
+        // 않으면 파일 하나를 격자와 채널 두 벌로 들고 있게 된다. 열이 채널인
+        // 배치에서는 한 채널이 격자 전체에 걸쳐 있어 이렇게 비울 수가 없다.
+        if (!view.flip) {
+            const size_t gr = view.row0 + line;
+            if (gr < grid.size()) {
+                grid[gr].clear();
+                grid[gr].shrink_to_fit();
+            }
+        }
 
         if (!std::isfinite(mn)) { ++skipped; continue; }
         ch.min = mn;
